@@ -70,6 +70,112 @@ fn import_preserves_source_and_switch_preserves_unrelated_settings() {
 }
 
 #[test]
+fn switching_marks_only_the_selected_provider_and_keeps_spacing_idempotent() {
+    let original = r#"model_provider = 'proxy'
+model = 'current-model'
+# manual provider comment
+[model_providers.manual] # manual header
+name = 'Manual'
+base_url = 'https://manual.example/v1'
+[model_providers.manual.http_headers]
+X-Example = 'retained'
+# selected provider comment
+[model_providers.proxy] # selected header
+name = 'Proxy'
+base_url = 'https://proxy.example/v1'
+# keep this unrelated section
+[mcp_servers.unchanged]
+command = 'example-tool'
+"#;
+    let (_temp, paths) = setup(original);
+    import(&paths, "work");
+    switcher::switch(&paths, "work", AuthMode::Auto, true).unwrap();
+    assert_eq!(fs::read_to_string(paths.config()).unwrap(), original);
+    switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
+    let first = fs::read_to_string(paths.config()).unwrap();
+    assert!(
+        first.contains("\n\n# manual provider comment\n[model_providers.manual] # manual header")
+    );
+    assert!(first.contains("\n\n# Managed by codex-sw (preset: work)\n# selected provider comment\n[model_providers.proxy] # selected header"));
+    assert_eq!(first.matches("# Managed by codex-sw").count(), 1);
+    assert!(first.contains("# keep this unrelated section\n[mcp_servers.unchanged]"));
+    let before = config::parse(original).unwrap();
+    let after = config::parse(&first).unwrap();
+    for id in ["manual", "proxy"] {
+        assert_eq!(
+            config::semantic(&before, id).unwrap(),
+            config::semantic(&after, id).unwrap()
+        );
+    }
+    assert_eq!(before["model"].as_str(), after["model"].as_str());
+    assert_eq!(
+        before["mcp_servers"].to_string(),
+        after["mcp_servers"].to_string()
+    );
+    switcher::undo(&paths).unwrap();
+    assert_eq!(fs::read_to_string(paths.config()).unwrap(), original);
+    switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
+    switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
+    assert_eq!(fs::read_to_string(paths.config()).unwrap(), first);
+    import(&paths, "work"); // Formatting does not change preset matching.
+    import(&paths, "alias");
+    switcher::switch(&paths, "alias", AuthMode::Auto, false).unwrap();
+    let alias = fs::read_to_string(paths.config()).unwrap();
+    assert!(alias.contains("# Managed by codex-sw (preset: alias)"));
+    assert!(!alias.contains("# Managed by codex-sw (preset: work)"));
+    assert_eq!(alias.matches("# Managed by codex-sw").count(), 1);
+}
+
+#[test]
+fn provider_markers_preserve_inline_dotted_and_quoted_provider_values() {
+    for source in [
+        "model_provider='proxy'\n# parent comment\nmodel_providers={proxy={name='Proxy',base_url='https://proxy.example/v1'},manual={name='Manual'}} # parent suffix\n",
+        "model_provider='proxy'\n[model_providers]\n# selected comment\nproxy={name='Proxy',base_url='https://proxy.example/v1'} # selected suffix\n# manual comment\nmanual={name='Manual'} # manual suffix\n",
+        "model_provider='proxy'\nmodel_providers.proxy.name='Proxy'\nmodel_providers.proxy.base_url='https://proxy.example/v1'\nmodel_providers.manual.name='Manual'\n",
+        "model_provider='proxy'\n[model_providers.proxy]\nname='Proxy'\n[model_providers.'manual.with.dots']\nname='Manual'\n",
+    ] {
+        let original = config::parse(source).unwrap();
+        let preset = config::Preset {
+            format_version: 1,
+            name: "work".into(),
+            provider: "proxy".into(),
+            config: config::selected_config(&original, "proxy")
+                .unwrap()
+                .to_string(),
+            credential: config::Credential::Provider,
+            source: "test".into(),
+        };
+        let formatted = config::apply(&original, &preset).unwrap().to_string();
+        let parsed = config::parse(&formatted).unwrap();
+        let providers = original["model_providers"].as_table_like().unwrap();
+        for (id, _) in providers.iter() {
+            assert_eq!(
+                config::semantic(&original, id).unwrap(),
+                config::semantic(&parsed, id).unwrap(),
+                "{formatted}"
+            );
+        }
+        assert!(
+            formatted.contains("\n\n# Managed by codex-sw (preset: work)\n"),
+            "{formatted}"
+        );
+        assert_eq!(formatted.matches("# Managed by codex-sw").count(), 1);
+        for line in source.lines() {
+            if let Some((_, comment)) = line.split_once('#') {
+                assert!(
+                    formatted.contains(comment.trim()),
+                    "lost comment: {formatted}"
+                );
+            }
+        }
+        assert_eq!(
+            config::apply(&parsed, &preset).unwrap().to_string(),
+            formatted
+        );
+    }
+}
+
+#[test]
 fn new_and_legacy_presets_preserve_current_and_absent_model_settings() {
     let saved_settings = r#"model = "saved-model"
 model_reasoning_effort = "low"

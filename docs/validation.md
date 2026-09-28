@@ -44,6 +44,14 @@
 
 使用已安装的 release 二进制完成了 Linux 终端交互验证：粘贴多行 TOML 和 JSON，以独立的 `END` 行结束，预设名称自动取自 `name`，凭据文件权限为 0600，当前配置未改变。格式检查、Linux Clippy 和 Windows MSVC 编译检查通过；本轮未运行 Windows/macOS 终端交互或真实模型请求。
 
+## 重启提示与 provider 格式验证
+
+移除进程扫描后，切换、撤销和实际恢复事务成功时固定提示已有 Codex 实例需要重启。`use` 和 `doctor` 的 JSON 结果不再包含 `active_instances`。Linux 上的 34 项集成测试通过，覆盖切换与撤销的固定提示、预览和诊断不提示、无待恢复事务和失败操作不提示，以及原有认证与事务行为。
+
+配置格式测试覆盖仅为所选 provider 添加管理标记、配置块间空行、重复切换的文本一致性、切换同一 provider 的不同预设时更新标记、保留用户注释，以及撤销后恢复原始文本。行内表、点分键和带引号的 provider ID 均验证了配置值不变与 TOML 可重新解析。
+
+`cargo fmt --check`、Linux Clippy、Windows MSVC 编译检查和 Linux release 构建通过。本轮未运行 Windows/macOS 原生测试或真实模型请求。
+
 ## 参考资料
 
 - [Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)

@@ -134,6 +134,62 @@ pub fn legacy_profile(doc: &DocumentMut, name: &str) -> Result<DocumentMut> {
     Ok(result)
 }
 
+fn expand_inline_table(key: &mut toml_edit::KeyMut<'_>, item: &mut Item) {
+    if let Some(inline) = item.as_inline_table() {
+        let prefix = key.leaf_decor().prefix().cloned().unwrap_or_default();
+        let suffix = inline.decor().suffix().cloned().unwrap_or_default();
+        let mut table = inline.clone().into_table();
+        table.decor_mut().set_prefix(prefix);
+        table.decor_mut().set_suffix(suffix);
+        key.leaf_decor_mut().clear();
+        *item = Item::Table(table);
+    }
+}
+
+fn format_providers(doc: &mut DocumentMut, managed_id: Option<(&str, &str)>) -> Result<()> {
+    let Some((mut key, item)) = doc.as_table_mut().get_key_value_mut("model_providers") else {
+        return Ok(());
+    };
+    expand_inline_table(&mut key, item);
+    let providers = item
+        .as_table_mut()
+        .context("model_providers 必须是 TOML 表")?;
+    providers.set_dotted(false);
+    for (mut id, item) in providers.iter_mut() {
+        expand_inline_table(&mut id, item);
+        let Some(table) = item.as_table_mut() else {
+            continue;
+        };
+        table.set_dotted(false);
+        table.set_implicit(false);
+        let prefix = table
+            .decor()
+            .prefix()
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let mut prefix = prefix.trim_start_matches(['\r', '\n']).to_owned();
+        if let Some((selected, name)) = managed_id
+            && id == selected
+        {
+            validate_name(name)?;
+            // Replace only our own marker; keep the provider's other comments.
+            prefix = prefix
+                .split_inclusive('\n')
+                .filter(|line| {
+                    !line
+                        .trim()
+                        .strip_prefix("# Managed by codex-sw (preset: ")
+                        .and_then(|s| s.strip_suffix(')'))
+                        .is_some_and(|s| validate_name(s).is_ok())
+                })
+                .collect();
+            prefix = format!("# Managed by codex-sw (preset: {name})\n{prefix}");
+        }
+        table.decor_mut().set_prefix(format!("\n{prefix}"));
+    }
+    Ok(())
+}
+
 pub fn apply(current: &DocumentMut, preset: &Preset) -> Result<DocumentMut> {
     ensure!(preset.format_version == 1, "不支持的预设版本");
     ensure!(
@@ -169,8 +225,26 @@ pub fn apply(current: &DocumentMut, preset: &Preset) -> Result<DocumentMut> {
             .get_mut("model_providers")
             .and_then(Item::as_table_like_mut)
             .context("当前 model_providers 必须是 TOML 表")?;
-        providers.insert(&preset.provider, def.clone());
+        let mut replacement = def.clone();
+        if let Some(old) = providers.get(&preset.provider).and_then(Item::as_table) {
+            let mut table = replacement
+                .into_table()
+                .map_err(|_| anyhow::anyhow!("provider 定义必须是 TOML 表"))?;
+            *table.decor_mut() = old.decor().clone();
+            table.set_position(old.position());
+            replacement = Item::Table(table);
+        }
+        if let Some(existing) = providers.get_mut(&preset.provider) {
+            *existing = replacement;
+        } else {
+            providers.insert(&preset.provider, replacement);
+        }
     }
+    format_providers(
+        &mut next,
+        definition(&selected, &preset.provider)
+            .map(|_| (preset.provider.as_str(), preset.name.as_str())),
+    )?;
     match &preset.credential {
         Credential::NativeFile => next["cli_auth_credentials_store"] = value("file"),
         Credential::External { store } => {

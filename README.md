@@ -126,6 +126,22 @@ CODEX_HOME/
 
 导入只提取 `model_provider`、`openai_base_url`、所选 `model_providers.<id>` 定义及相关认证方式。切换只更新这些 provider 设置和必要的认证存储配置。所选 provider 的定义作为整体恢复；`openai_base_url` 以预设为准，预设未设置时清除。模型、推理强度、上下文窗口、模型目录、`service_tier`、MCP、沙盒、项目授权和其他设置保持当前值，包括未设置状态。工具使用 TOML 语法树编辑以保留无关注释。已有 config.toml 软链会保留，并编辑其实际目标。
 
+执行 `use` 时，工具在写入的 provider 定义前添加管理注释，并在各 provider 配置块前保留一个空行。例如，激活 `work` 预设后：
+
+```toml
+# 手动维护的 provider
+[model_providers.personal]
+name = "Personal"
+base_url = "https://personal.example/v1"
+
+# Managed by codex-sw (preset: work)
+[model_providers.company]
+name = "Work"
+base_url = "https://company.example/v1"
+```
+
+注释标明该定义最近由哪个预设写入。已有用户注释会保留，重复切换不会累积管理注释或空行。工具会将行内和点分写法的 provider 整理为独立配置块，保留配置值。`add` 和 `import` 只保存预设，不修改源配置或添加管理标记；内置 provider 没有自定义定义时也不创建配置块。`undo` 会恢复切换前的配置文本。
+
 已有预设保持可读取，其中旧版本保存的模型参数会被忽略，不再参与切换、预设匹配或重复导入判断。工具不会自动重写这些预设文件。`list` 的文本和 JSON 输出均不包含预设模型；`current` 仍显示配置中的实际默认模型。
 
 导入旧 profile 不会改写源文件。若正在使用的 config.toml 仍有旧顶层 `profile` 选择器，需先按 Codex 官方指引迁移；工具不会静默删除旧 profile 配置。CLI 参数、独立 profile、项目和管理配置仍可能覆盖用户默认值，`current` 不表示运行中会话的完整配置。
