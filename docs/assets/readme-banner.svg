@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="350" viewBox="0 0 1200 350" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">codex switch</title>
+  <desc id="desc">按 Provider ID 切换 Codex 服务商，保留模型设置。终端示例展示 company 和 proxy 两个 Provider 的端点，以及 codex-sw use company 命令。</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1200" y2="350" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111827"/>
+      <stop offset="1" stop-color="#102822"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="44" y1="0" x2="452" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6EE7B7"/>
+      <stop offset="1" stop-color="#6EE7B7" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="0.5" y="0.5" width="1199" height="349" rx="18" fill="url(#background)" stroke="#334155"/>
+  <path d="M44 43H452" stroke="url(#accent)" stroke-width="3"/>
+  <g font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif">
+    <text x="44" y="83" fill="#8DA49E" font-size="12" font-weight="600" letter-spacing="2.6">CODEX PROVIDER SWITCHER</text>
+    <text x="42" y="149" fill="#F1F5F9" font-size="54" font-weight="700" letter-spacing="-2">codex switch</text>
+    <text x="44" y="192" fill="#BCD0C9" font-size="19" font-family="'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC', sans-serif">切换 Provider，保留模型设置。</text>
+    <g font-family="'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="14">
+      <rect x="44" y="239" width="89" height="34" rx="7" fill="#6EE7B7" fill-opacity="0.09" stroke="#31584C"/>
+      <text x="63" y="261" fill="#A7F3D0">import</text>
+      <rect x="145" y="239" width="69" height="34" rx="7" fill="#6EE7B7" fill-opacity="0.09" stroke="#31584C"/>
+      <text x="166" y="261" fill="#A7F3D0">use</text>
+      <rect x="226" y="239" width="78" height="34" rx="7" fill="#6EE7B7" fill-opacity="0.09" stroke="#31584C"/>
+      <text x="247" y="261" fill="#A7F3D0">undo</text>
+    </g>
+  </g>
+  <rect x="494" y="35" width="662" height="280" rx="12" fill="#0B1217" stroke="#34433E"/>
+  <path d="M494 77H1156" stroke="#26382F"/>
+  <circle cx="517" cy="56" r="4" fill="#496359"/>
+  <circle cx="532" cy="56" r="4" fill="#496359"/>
+  <circle cx="547" cy="56" r="4" fill="#496359"/>
+  <g font-family="'SFMono-Regular', Consolas, 'Liberation Mono', monospace">
+    <text x="825" y="61" fill="#8AA397" font-size="12" text-anchor="middle">codex-sw</text>
+    <text x="522" y="117" font-size="17"><tspan fill="#6EE7B7">$</tspan><tspan fill="#E2E8F0"> codex-sw list</tspan></text>
+    <text x="522" y="160" fill="#8AA397" font-size="15">Provider</text>
+    <text x="633" y="160" fill="#8AA397" font-size="15" font-family="'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC', sans-serif">端点</text>
+    <path d="M522 171H600M633 171H670" stroke="#344B40"/>
+    <text x="522" y="198" fill="#E2E8F0" font-size="16">company</text>
+    <text x="633" y="198" fill="#ACC2B7" font-size="16">https://company.example/v1</text>
+    <text x="522" y="227" fill="#E2E8F0" font-size="16">proxy</text>
+    <text x="633" y="227" fill="#ACC2B7" font-size="16">https://proxy.example/v1</text>
+    <text x="522" y="277" font-size="17"><tspan fill="#6EE7B7">$</tspan><tspan fill="#E2E8F0"> codex-sw use company</tspan></text>
+    <rect x="776" y="263" width="9" height="18" rx="1" fill="#6EE7B7" fill-opacity="0.75"/>
+  </g>
+</svg>
