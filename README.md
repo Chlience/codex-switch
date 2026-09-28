@@ -1,6 +1,6 @@
-# codex-sw
+# codex switch
 
-跨平台 Codex provider 切换器。支持已有配置导入、命名凭据、默认 provider 切换、活跃实例提示、撤销和中断恢复。
+跨平台 Codex provider 切换器，命令行程序名为 `codex-sw`。支持已有配置导入、命名凭据、默认 provider 切换、活跃实例提示、撤销和中断恢复。
 
 发现 Codex 仍在运行时，会显示 PID 并提醒重启，切换照常执行。工具不会结束进程、等待退出或要求额外的强制参数。既有会话不会因此自动切换 provider。
 
