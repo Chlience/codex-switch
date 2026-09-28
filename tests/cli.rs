@@ -4,6 +4,7 @@ use codex_sw::{config, storage::Paths, switcher};
 use serde_json::json;
 use std::{
     fs,
+    io::{BufRead, BufReader, Write},
     process::{Child, Command, Output, Stdio},
 };
 use tempfile::TempDir;
@@ -40,6 +41,179 @@ fn native_auth(key: &str) -> Vec<u8> {
         &json!({"auth_mode":"apikey", "OPENAI_API_KEY":key, "unknown_field":{"retained":true}}),
     )
     .unwrap()
+}
+
+fn interactive_cli(paths: &Paths, input: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_codex-sw"))
+        .arg("--codex-home")
+        .arg(&paths.home)
+        .args(["add", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
+    child.wait_with_output().unwrap()
+}
+
+fn pasted_provider(name: &str) -> String {
+    format!(
+        "[model_providers.gateway]\nname='{name}'\nbase_url='https://provider.example/v1'\nwire_api='responses'\n"
+    )
+}
+
+#[test]
+fn interactive_add_uses_provider_name_and_preserves_auth_bytes() {
+    let original = inline_config("dummy-active");
+    let (_temp, paths) = setup(&original);
+    let active_auth = native_auth("dummy-active");
+    fs::write(paths.auth(), &active_auth).unwrap();
+    let auth = "{\r\n  \"OPENAI_API_KEY\": \"dummy-pasted-secret\",\r\n  \"extra\": {\"preserved\": true}\r\n}\r\n";
+    let input = format!(
+        "model='unused-model'\nmodel_reasoning_effort='low'\n{}END\n{auth}END\r\n",
+        pasted_provider("office")
+    );
+    let output = interactive_cli(&paths, &input);
+    assert!(output.status.success(), "{:?}", output);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result, json!({"added":"office"}));
+    let preset = switcher::load_preset(&paths, "office").unwrap();
+    assert_eq!(preset.provider, "gateway");
+    assert!(matches!(preset.credential, config::Credential::NativeFile));
+    let doc = config::parse(&preset.config).unwrap();
+    assert!(doc.get("model").is_none());
+    assert!(doc.get("model_reasoning_effort").is_none());
+    assert_eq!(
+        doc["model_providers"]["gateway"]["requires_openai_auth"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        fs::read(paths.credential("office")).unwrap(),
+        auth.as_bytes()
+    );
+    assert_eq!(fs::read(paths.auth()).unwrap(), active_auth);
+    assert_eq!(fs::read_to_string(paths.config()).unwrap(), original);
+    assert!(!paths.state().exists());
+    for bytes in [&output.stdout, &output.stderr] {
+        assert!(!String::from_utf8_lossy(bytes).contains("dummy-pasted-secret"));
+    }
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("预设名称："));
+}
+
+#[test]
+fn interactive_add_checks_duplicate_names_before_requesting_auth() {
+    let (_temp, paths) = setup(&inline_config("dummy-active"));
+    let args = ["add", "work", "--base-url", "https://provider.example/v1"];
+    assert!(cli(&paths, &args).status.success());
+    let saved = fs::read(paths.preset("work")).unwrap();
+    assert!(!cli(&paths, &args).status.success());
+    let input = format!(
+        "{}END\n{}END\n{{\"OPENAI_API_KEY\":\"dummy-new\"}}\nEND\n",
+        pasted_provider("WORK"),
+        pasted_provider("office")
+    );
+    let output = interactive_cli(&paths, &input);
+    assert!(output.status.success());
+    let prompts = String::from_utf8_lossy(&output.stderr);
+    assert!(prompts.find("已存在").unwrap() < prompts.find("粘贴 auth.json").unwrap());
+    assert_eq!(fs::read(paths.preset("work")).unwrap(), saved);
+    assert!(!paths.preset("WORK").exists());
+    assert!(paths.preset("office").exists());
+}
+
+#[test]
+fn interactive_add_retries_invalid_blocks_and_honors_provider_selector() {
+    let (_temp, paths) = setup(&inline_config("dummy-active"));
+    let multi = format!(
+        "{}[model_providers.other]\nname='other'\nbase_url='https://other.example/v1'\n",
+        pasted_provider("office")
+    );
+    let input = format!(
+        "name='dummy-invalid-secret\nEND\n{multi}END\n{}END\nmodel_provider='gateway'\n{multi}END\n{{\"OPENAI_API_KEY\":\"dummy-invalid-json-secret\",}}\nEND\n{{\"OPENAI_API_KEY\":\"\"}}\nEND\n{{\"OPENAI_API_KEY\":\"dummy-valid-secret\"}}\nEND\n",
+        pasted_provider("office").replace("name='office'\n", "")
+    );
+    let output = interactive_cli(&paths, &input);
+    assert!(output.status.success());
+    let prompts = String::from_utf8_lossy(&output.stderr);
+    assert!(prompts.contains("配置含多个 provider"));
+    assert!(prompts.contains("缺少字符串字段 name"));
+    assert!(prompts.contains("API key 为空"));
+    assert!(!prompts.contains("dummy-invalid-secret"));
+    assert!(!prompts.contains("dummy-invalid-json-secret"));
+    assert!(!prompts.contains("dummy-valid-secret"));
+    assert_eq!(
+        switcher::load_preset(&paths, "office").unwrap().provider,
+        "gateway"
+    );
+    assert!(!paths.preset("other").exists());
+}
+
+#[test]
+fn interactive_add_rejects_incomplete_or_oversized_input_without_writes() {
+    let source = inline_config("dummy-active");
+    for input in [
+        String::new(),
+        pasted_provider("office"),
+        format!("{}END\n", pasted_provider("office")),
+        format!(
+            "{}END\n{{\"OPENAI_API_KEY\":\"dummy\"}}",
+            pasted_provider("office")
+        ),
+        "x".repeat(1024 * 1024 + 1),
+    ] {
+        let (_temp, paths) = setup(&source);
+        let output = interactive_cli(&paths, &input);
+        assert!(!output.status.success());
+        assert!(!paths.store.exists());
+        assert_eq!(fs::read_to_string(paths.config()).unwrap(), source);
+    }
+    let (_temp, paths) = setup(&source);
+    let output = cli(
+        &paths,
+        &["add", "--base-url", "https://provider.example/v1"],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!paths.store.exists());
+}
+
+#[test]
+fn interactive_add_rechecks_name_when_saving() {
+    let (_temp, paths) = setup(&inline_config("dummy-active"));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_codex-sw"))
+        .arg("--codex-home")
+        .arg(&paths.home)
+        .args(["add", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    writeln!(input, "{}END", pasted_provider("office")).unwrap();
+    let mut prompts = BufReader::new(child.stderr.take().unwrap());
+    loop {
+        let mut line = String::new();
+        assert!(prompts.read_line(&mut line).unwrap() > 0);
+        if line.contains("粘贴 auth.json") {
+            break;
+        }
+    }
+    assert!(
+        cli(
+            &paths,
+            &["add", "office", "--base-url", "https://other.example/v1"]
+        )
+        .status
+        .success()
+    );
+    let saved = fs::read(paths.preset("office")).unwrap();
+    writeln!(input, "{{\"OPENAI_API_KEY\":\"dummy-race\"}}\nEND").unwrap();
+    drop(input);
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert_eq!(fs::read(paths.preset("office")).unwrap(), saved);
+    assert!(!paths.credential("office").exists());
 }
 
 #[test]

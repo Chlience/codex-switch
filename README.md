@@ -36,6 +36,7 @@ codex-sw undo
 | `import <name> --provider <id>` | 从配置中选择某个 provider |
 | `import --all` | 导入所有 provider；仅当前 provider 自动关联原生认证文件 |
 | `import <name> --auth-file <file>` | 显式关联原生认证文件 |
+| `add` | 依次粘贴 provider 配置和 auth.json，以 provider 的 `name` 保存预设 |
 | `add <name> ...` | 添加新的预设，不激活 |
 | `list` | 显示带表头的预设名称和 provider 两列表格，不显示模型或密钥 |
 | `current` | 查看实际用户默认 provider 和模型，不显示密钥 |
@@ -47,6 +48,35 @@ codex-sw undo
 | `remove <name>` | 删除未使用的预设登记；凭据与历史备份保留 |
 
 `import` 和 `use` 支持 `--dry-run`。同名且 provider 与认证配置相同的导入会跳过；仅模型参数变化时也视为相同。provider 或认证配置不同则必须使用新名称。预设名称允许 ASCII 字母、数字、横线及下划线，避开 Windows 保留名称和大小写冲突。
+
+`add` 拒绝已有预设名称，包括仅大小写不同的名称。交互式添加会在接收 auth.json 前检查名称，保存时在文件锁内再次检查。
+
+无需先创建文件时，运行：
+
+```text
+codex-sw add
+```
+
+按提示粘贴 provider 的 TOML 配置，单独输入一行 `END` 结束。例如：
+
+```toml
+[model_providers.company]
+name = "work"
+base_url = "https://provider.example/v1"
+wire_api = "responses"
+```
+
+工具直接使用 `name` 的值 `work` 作为预设名称，provider ID 为 `company`。也可以粘贴完整 `config.toml`；含多个 provider 时，需要用顶层 `model_provider` 指定所选 provider。所选 provider 必须包含有效的 `name`，名称不符合规则或已存在时，修改配置后重新粘贴。
+
+随后粘贴完整 auth.json 内容，再单独输入一行 `END`：
+
+```json
+{"OPENAI_API_KEY": "your-api-key"}
+```
+
+输入通过校验后自动保存预设，无需额外确认；使用 `codex-sw use work` 激活。auth.json 的原始字节和未知字段会保留。交互式添加为自定义 provider 设置 `requires_openai_auth = true`；如配置包含 `env_key`、`experimental_bearer_token` 或认证命令，先移除这些认证字段再粘贴。模型和其他运行参数仍不进入预设。
+
+两段输入均支持空行和多行，每段最多 1 MiB，结束标记不计入内容。输入结束前必须提交 `END`；读取到 EOF 或中途退出时不保存未完成的预设。交互提示写入 stderr，`add --json` 的保存结果写入 stdout。程序的结果和错误消息不包含粘贴的凭据内容。
 
 `list` 自动按预设名称长度对齐两列，例如：
 

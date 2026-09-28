@@ -38,6 +38,12 @@
 
 `cargo fmt --check`、Linux 的 `cargo clippy --locked --all-targets -- -D warnings` 和 Windows MSVC 的 `cargo check --locked --all-targets --target x86_64-pc-windows-msvc` 均通过，release 二进制已构建。本轮未执行 Windows/macOS 原生运行时测试，也未重跑上文使用 Codex CLI 0.156.1 的模型请求兼容性案例。
 
+## 交互式添加验证
+
+新增 `codex-sw add` 无参数入口，依次粘贴 provider 配置与 auth.json，使用所选 provider 的 `name` 保存预设。Linux 上的 33 项集成测试通过，覆盖单个 provider 与完整配置、名称重复及大小写冲突、保存时发生的并发重名、无效内容重试、EOF 和输入大小限制，以及原始凭据字节保留。
+
+使用已安装的 release 二进制完成了 Linux 终端交互验证：粘贴多行 TOML 和 JSON，以独立的 `END` 行结束，预设名称自动取自 `name`，凭据文件权限为 0600，当前配置未改变。格式检查、Linux Clippy 和 Windows MSVC 编译检查通过；本轮未运行 Windows/macOS 终端交互或真实模型请求。
+
 ## 参考资料
 
 - [Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)

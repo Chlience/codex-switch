@@ -9,6 +9,8 @@ use codex_sw::{
 use std::{io::Read, path::PathBuf};
 use toml_edit::{DocumentMut, Item, Table, value};
 
+mod interactive;
+
 #[derive(Parser)]
 #[command(
     name = "codex-sw",
@@ -48,18 +50,18 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
-    /// 添加 provider 预设（直接 token 从 stdin 输入，不放入参数）
+    /// 添加 provider 预设；不带参数时逐步粘贴配置和 auth.json
     Add {
-        name: String,
-        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, requires = "name")]
         provider: Option<String>,
-        #[arg(long)]
+        #[arg(long, requires = "name")]
         base_url: Option<String>,
-        #[arg(long, conflicts_with_all = ["bearer_token_stdin", "auth_file"])]
+        #[arg(long, requires = "name", conflicts_with_all = ["bearer_token_stdin", "auth_file"])]
         env_key: Option<String>,
-        #[arg(long, conflicts_with = "auth_file")]
+        #[arg(long, requires = "name", conflicts_with = "auth_file")]
         bearer_token_stdin: bool,
-        #[arg(long)]
+        #[arg(long, requires = "name")]
         auth_file: Option<PathBuf>,
     },
     /// 显示预设名称和 provider 表格，不显示凭据
@@ -141,6 +143,18 @@ fn run(cli: Cli) -> Result<()> {
             bearer_token_stdin,
             auth_file,
         } => {
+            let Some(name) = name else {
+                let name = interactive::add(
+                    &paths,
+                    &mut std::io::stdin().lock(),
+                    &mut std::io::stderr().lock(),
+                )?;
+                return output(
+                    cli.json,
+                    serde_json::json!({"added":name}),
+                    format!("已保存预设 {name}。使用 codex-sw use {name} 激活。"),
+                );
+            };
             config::validate_name(&name)?;
             let id = provider.unwrap_or_else(|| name.clone());
             ensure!(!id.trim().is_empty(), "provider ID 不能为空");

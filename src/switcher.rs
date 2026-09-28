@@ -291,6 +291,17 @@ pub fn import(paths: &Paths, options: ImportOptions) -> Result<ImportResult> {
     Ok(result)
 }
 
+pub fn check_new_name(paths: &Paths, name: &str) -> Result<()> {
+    config::validate_name(name)?;
+    ensure!(
+        !list(paths)?
+            .iter()
+            .any(|preset| preset.name.eq_ignore_ascii_case(name)),
+        "预设名称已存在（不区分大小写），请使用其他名称"
+    );
+    Ok(())
+}
+
 pub fn add(paths: &Paths, mut preset: Preset, auth: Option<Vec<u8>>) -> Result<()> {
     config::validate_name(&preset.name)?;
     let doc = config::parse(&preset.config)?;
@@ -306,6 +317,7 @@ pub fn add(paths: &Paths, mut preset: Preset, auth: Option<Vec<u8>>) -> Result<(
     }
     let _lock = paths.lock()?;
     paths.require_clean()?;
+    check_new_name(paths, &preset.name)?;
     let changes = register_changes(paths, &preset, auth.as_deref())?;
     storage::execute(paths, Journal::new(changes, false))
 }
