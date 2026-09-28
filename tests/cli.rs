@@ -241,7 +241,7 @@ fn cli_add_and_list_only_manage_provider_fields() {
     assert!(listed.status.success());
     assert_eq!(
         String::from_utf8(listed.stdout).unwrap(),
-        "Provider  端点\n────────  ────\nwork      https://provider.example/v1\n"
+        "Provider  端点\n────────  ───────────────────────────\nwork      https://provider.example/v1\n"
     );
     let listed_json = run(&["list", "--json"]);
     assert!(listed_json.status.success());
@@ -250,13 +250,18 @@ fn cli_add_and_list_only_manage_provider_fields() {
     assert_eq!(records[0]["endpoint"], "https://provider.example/v1");
     assert_eq!(records[0]["provider"], "work");
     assert!(records[0].get("model").is_none());
-    let added = run(&["add", "示例", "--base-url", "https://provider.example/v1"]);
+    let added = run(&[
+        "add",
+        "示例-provider",
+        "--base-url",
+        "https://provider.example/v1/备用",
+    ]);
     assert!(added.status.success());
     let listed = run(&["list"]);
     assert!(listed.status.success());
     assert_eq!(
         String::from_utf8(listed.stdout).unwrap(),
-        "Provider  端点\n────────  ────\nwork      https://provider.example/v1\n示例      https://provider.example/v1\n"
+        "Provider       端点\n─────────────  ────────────────────────────────\nwork           https://provider.example/v1\n示例-provider  https://provider.example/v1/备用\n"
     );
     let rejected = run(&[
         "add",
@@ -270,13 +275,13 @@ fn cli_add_and_list_only_manage_provider_fields() {
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("--model"));
     assert!(!paths.preset("with-model").exists());
     assert_eq!(fs::read_to_string(paths.config()).unwrap(), original);
-    let removed = run(&["remove", "示例", "--json"]);
+    let removed = run(&["remove", "示例-provider", "--json"]);
     assert!(removed.status.success());
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&removed.stdout).unwrap()["removed"],
-        "示例"
+        "示例-provider"
     );
-    assert!(switcher::load_provider(&paths, "示例").is_err());
+    assert!(switcher::load_provider(&paths, "示例-provider").is_err());
     assert_eq!(run(&["import", "unused-alias"]).status.code(), Some(2));
     assert_eq!(
         run(&[

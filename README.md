@@ -63,7 +63,7 @@ codex-sw list
 
 ```text
 Provider  端点
-────────  ────
+────────  ──────────────────────────
 company   https://company.example/v1
 proxy     https://proxy.example/v1
 ```

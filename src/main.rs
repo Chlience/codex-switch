@@ -227,28 +227,47 @@ fn run(cli: Cli) -> Result<()> {
             let text = if presets.is_empty() {
                 "尚无 Provider；使用 import 或 add 添加。".to_owned()
             } else {
-                let width = presets
+                let rows = summaries
                     .iter()
-                    .map(|p| p.provider.width())
+                    .map(|row| {
+                        let provider = row["provider"].as_str().unwrap();
+                        let endpoint = row["endpoint"].as_str().unwrap_or_else(|| {
+                            if config::builtin(provider) {
+                                "Codex 默认"
+                            } else {
+                                "未配置"
+                            }
+                        });
+                        (provider, endpoint)
+                    })
+                    .collect::<Vec<_>>();
+                let provider_width = rows
+                    .iter()
+                    .map(|(provider, _)| provider.width())
                     .max()
                     .unwrap()
-                    .max(8);
+                    .max("Provider".width());
+                let endpoint_width = rows
+                    .iter()
+                    .map(|(_, endpoint)| endpoint.width())
+                    .max()
+                    .unwrap()
+                    .max("端点".width());
                 let mut lines = vec![
-                    format!("Provider{}  端点", " ".repeat(width - 8)),
-                    format!("{}  ────", "─".repeat(width)),
+                    format!(
+                        "Provider{}  端点",
+                        " ".repeat(provider_width - "Provider".width())
+                    ),
+                    format!(
+                        "{}  {}",
+                        "─".repeat(provider_width),
+                        "─".repeat(endpoint_width)
+                    ),
                 ];
-                lines.extend(summaries.iter().map(|row| {
-                    let provider = row["provider"].as_str().unwrap();
-                    let endpoint = row["endpoint"].as_str().unwrap_or_else(|| {
-                        if config::builtin(provider) {
-                            "Codex 默认"
-                        } else {
-                            "未配置"
-                        }
-                    });
+                lines.extend(rows.iter().map(|(provider, endpoint)| {
                     format!(
                         "{provider}{}  {endpoint}",
-                        " ".repeat(width - provider.width())
+                        " ".repeat(provider_width - provider.width())
                     )
                 }));
                 lines.join("\n")

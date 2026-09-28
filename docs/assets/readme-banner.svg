@@ -36,7 +36,7 @@
     <text x="522" y="117" font-size="17"><tspan fill="#6EE7B7">$</tspan><tspan fill="#E2E8F0"> codex-sw list</tspan></text>
     <text x="522" y="160" fill="#8AA397" font-size="15">Provider</text>
     <text x="633" y="160" fill="#8AA397" font-size="15" font-family="'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC', sans-serif">端点</text>
-    <path d="M522 171H600M633 171H670" stroke="#344B40"/>
+    <path d="M522 171H600M633 171H883" stroke="#344B40"/>
     <text x="522" y="198" fill="#E2E8F0" font-size="16">company</text>
     <text x="633" y="198" fill="#ACC2B7" font-size="16">https://company.example/v1</text>
     <text x="522" y="227" fill="#E2E8F0" font-size="16">proxy</text>
