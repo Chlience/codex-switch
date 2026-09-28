@@ -27,15 +27,8 @@ fn native_config() -> &'static str {
     "model_provider = \"proxy\"\nmodel = \"model-a\"\n[model_providers.proxy]\nname = \"Proxy\"\nbase_url = \"https://example.invalid/v1\"\nrequires_openai_auth = true\n"
 }
 
-fn import(paths: &Paths, name: &str) {
-    switcher::import(
-        paths,
-        ImportOptions {
-            name: Some(name.into()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
+fn import(paths: &Paths) {
+    switcher::import(paths, ImportOptions::default()).unwrap();
 }
 
 fn native_auth(key: &str) -> Vec<u8> {
@@ -49,7 +42,7 @@ fn native_auth(key: &str) -> Vec<u8> {
 fn import_preserves_source_and_switch_preserves_unrelated_settings() {
     let original = inline_config("dummy-a");
     let (_temp, paths) = setup(&original);
-    import(&paths, "work");
+    import(&paths);
     assert_eq!(fs::read_to_string(paths.config()).unwrap(), original);
     fs::write(
         paths.config(),
@@ -58,7 +51,7 @@ fn import_preserves_source_and_switch_preserves_unrelated_settings() {
             .replace("dummy-a", "other-key"),
     )
     .unwrap();
-    switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
+    switcher::switch(&paths, "proxy", AuthMode::Auto, false).unwrap();
     let switched = fs::read_to_string(paths.config()).unwrap();
     assert!(switched.contains("model = \"other-model\""));
     assert!(switched.contains("experimental_bearer_token = \"dummy-a\""));
@@ -66,7 +59,7 @@ fn import_preserves_source_and_switch_preserves_unrelated_settings() {
     assert!(switched.contains("# provider note"));
     assert!(switched.contains("command = \"example-tool\" # retained"));
     assert!(switched.contains("shell_snapshot = false"));
-    assert_eq!(switcher::current(&paths).unwrap()["name"], "work");
+    assert_eq!(switcher::current(&paths).unwrap()["matches_saved"], true);
 }
 
 #[test]
@@ -88,15 +81,15 @@ base_url = 'https://proxy.example/v1'
 command = 'example-tool'
 "#;
     let (_temp, paths) = setup(original);
-    import(&paths, "work");
-    switcher::switch(&paths, "work", AuthMode::Auto, true).unwrap();
+    import(&paths);
+    switcher::switch(&paths, "proxy", AuthMode::Auto, true).unwrap();
     assert_eq!(fs::read_to_string(paths.config()).unwrap(), original);
-    switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
+    switcher::switch(&paths, "proxy", AuthMode::Auto, false).unwrap();
     let first = fs::read_to_string(paths.config()).unwrap();
     assert!(
         first.contains("\n\n# manual provider comment\n[model_providers.manual] # manual header")
     );
-    assert!(first.contains("\n\n# Managed by codex-sw (preset: work)\n# selected provider comment\n[model_providers.proxy] # selected header"));
+    assert!(first.contains("\n\n# Managed by codex-sw\n# selected provider comment\n[model_providers.proxy] # selected header"));
     assert_eq!(first.matches("# Managed by codex-sw").count(), 1);
     assert!(first.contains("# keep this unrelated section\n[mcp_servers.unchanged]"));
     let before = config::parse(original).unwrap();
@@ -114,16 +107,10 @@ command = 'example-tool'
     );
     switcher::undo(&paths).unwrap();
     assert_eq!(fs::read_to_string(paths.config()).unwrap(), original);
-    switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
-    switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
+    switcher::switch(&paths, "proxy", AuthMode::Auto, false).unwrap();
+    switcher::switch(&paths, "proxy", AuthMode::Auto, false).unwrap();
     assert_eq!(fs::read_to_string(paths.config()).unwrap(), first);
-    import(&paths, "work"); // Formatting does not change preset matching.
-    import(&paths, "alias");
-    switcher::switch(&paths, "alias", AuthMode::Auto, false).unwrap();
-    let alias = fs::read_to_string(paths.config()).unwrap();
-    assert!(alias.contains("# Managed by codex-sw (preset: alias)"));
-    assert!(!alias.contains("# Managed by codex-sw (preset: work)"));
-    assert_eq!(alias.matches("# Managed by codex-sw").count(), 1);
+    import(&paths); // Formatting does not change preset matching.
 }
 
 #[test]
@@ -156,7 +143,7 @@ fn provider_markers_preserve_inline_dotted_and_quoted_provider_values() {
             );
         }
         assert!(
-            formatted.contains("\n\n# Managed by codex-sw (preset: work)\n"),
+            formatted.contains("\n\n# Managed by codex-sw\n"),
             "{formatted}"
         );
         assert_eq!(formatted.matches("# Managed by codex-sw").count(), 1);
@@ -205,8 +192,8 @@ service_tier = "flex"
     for legacy in [false, true] {
         for settings in [current_settings, ""] {
             let (_temp, paths) = setup(&source);
-            import(&paths, "work");
-            let mut preset = switcher::load_preset(&paths, "work").unwrap();
+            import(&paths);
+            let mut preset = switcher::load_preset(&paths, "proxy").unwrap();
             let selected = config::parse(&preset.config).unwrap();
             for (key, _) in saved_doc.iter() {
                 assert!(selected.get(key).is_none(), "import captured {key}");
@@ -215,22 +202,22 @@ service_tier = "flex"
                 // Existing version-1 records may contain stale or invalid model values.
                 preset.config = format!("{saved_settings}{}", preset.config)
                     .replace("model = \"saved-model\"", "model = \"\"");
-                fs::write(paths.preset("work"), serde_json::to_vec(&preset).unwrap()).unwrap();
+                fs::write(paths.preset("proxy"), serde_json::to_vec(&preset).unwrap()).unwrap();
             }
             assert!(!config::summary(&preset).unwrap().contains_key("model"));
-            let saved_bytes = fs::read(paths.preset("work")).unwrap();
+            let saved_bytes = fs::read(paths.preset("proxy")).unwrap();
             let active = format!(
                 "{settings}model_provider = 'other'\n[model_providers.other]\nname='Other'\nbase_url='https://other.invalid/v1'\n[models.new_thread]\nmodel='future-model'\n"
             );
             fs::write(paths.config(), &active).unwrap();
             let before = config::parse(&active).unwrap();
-            let preview = switcher::switch(&paths, "work", AuthMode::Auto, true).unwrap();
+            let preview = switcher::switch(&paths, "proxy", AuthMode::Auto, true).unwrap();
             assert_eq!(
                 preview.changed_keys,
                 ["model_provider", "model_providers.<selected>"]
             );
             assert_eq!(fs::read_to_string(paths.config()).unwrap(), active);
-            switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
+            switcher::switch(&paths, "proxy", AuthMode::Auto, false).unwrap();
             let mut after = switcher::load_config(&paths).unwrap();
             for (key, _) in saved_doc.iter() {
                 assert_eq!(
@@ -252,18 +239,17 @@ service_tier = "flex"
             after["model"] = toml_edit::value("user-selected-model");
             fs::write(paths.config(), after.to_string()).unwrap();
             let current = switcher::current(&paths).unwrap();
-            assert_eq!(current["name"], "work");
+            assert_eq!(current["matches_saved"], true);
             assert_eq!(current["model"], "user-selected-model");
             let reimport = switcher::import(
                 &paths,
                 ImportOptions {
-                    name: Some("work".into()),
                     ..Default::default()
                 },
             )
             .unwrap();
-            assert_eq!(reimport.unchanged, ["work"]);
-            assert_eq!(fs::read(paths.preset("work")).unwrap(), saved_bytes);
+            assert_eq!(reimport.unchanged, ["proxy"]);
+            assert_eq!(fs::read(paths.preset("proxy")).unwrap(), saved_bytes);
         }
     }
 }
@@ -292,13 +278,13 @@ fn add_only_saves_provider_settings_and_switches_its_route() {
         None,
     )
     .unwrap();
-    let preset = switcher::load_preset(&paths, "work").unwrap();
+    let preset = switcher::load_preset(&paths, "proxy").unwrap();
     let saved = config::parse(&preset.config).unwrap();
     assert!(saved.get("model").is_none());
     assert!(saved.get("features").is_none());
     assert!(saved.get("mcp_servers").is_none());
     assert_eq!(fs::read_to_string(paths.config()).unwrap(), active);
-    let result = switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
+    let result = switcher::switch(&paths, "proxy", AuthMode::Auto, false).unwrap();
     assert_eq!(
         result.changed_keys,
         ["openai_base_url", "model_providers.<selected>"]
@@ -319,17 +305,16 @@ fn dry_run_does_not_create_store_or_modify_files() {
     let result = switcher::import(
         &paths,
         ImportOptions {
-            name: Some("work".into()),
             dry_run: true,
             ..Default::default()
         },
     )
     .unwrap();
-    assert_eq!(result.imported, ["work"]);
+    assert_eq!(result.imported, ["proxy"]);
     assert!(!paths.store.exists());
-    import(&paths, "work");
+    import(&paths);
     let state_before = Snapshot::read(&paths.state()).unwrap();
-    let result = switcher::switch(&paths, "work", AuthMode::Auto, true).unwrap();
+    let result = switcher::switch(&paths, "proxy", AuthMode::Auto, true).unwrap();
     assert!(result.dry_run);
     assert_eq!(Snapshot::read(&paths.state()).unwrap(), state_before);
     assert_eq!(fs::read_to_string(paths.config()).unwrap(), original);
@@ -339,29 +324,27 @@ fn dry_run_does_not_create_store_or_modify_files() {
 #[test]
 fn duplicate_import_is_idempotent_and_different_content_is_preserved() {
     let (_temp, paths) = setup(&inline_config("dummy-a"));
-    import(&paths, "work");
-    let saved = fs::read(paths.preset("work")).unwrap();
+    import(&paths);
+    let saved = fs::read(paths.preset("proxy")).unwrap();
     let result = switcher::import(
         &paths,
         ImportOptions {
-            name: Some("work".into()),
             ..Default::default()
         },
     )
     .unwrap();
-    assert_eq!(result.unchanged, ["work"]);
+    assert_eq!(result.unchanged, ["proxy"]);
     fs::write(paths.config(), inline_config("dummy-b")).unwrap();
     assert!(
         switcher::import(
             &paths,
             ImportOptions {
-                name: Some("work".into()),
                 ..Default::default()
             }
         )
         .is_err()
     );
-    assert_eq!(fs::read(paths.preset("work")).unwrap(), saved);
+    assert_eq!(fs::read(paths.preset("proxy")).unwrap(), saved);
 }
 
 #[test]
@@ -370,8 +353,8 @@ fn native_import_preserves_every_byte_and_unknown_fields() {
     let bytes =
         b"{\n  \"auth_mode\": \"apikey\", \"OPENAI_API_KEY\": \"dummy-key\", \"future\": 123\n}\n";
     fs::write(paths.auth(), bytes).unwrap();
-    import(&paths, "work");
-    assert_eq!(fs::read(paths.credential("work")).unwrap(), bytes);
+    import(&paths);
+    assert_eq!(fs::read(paths.credential("proxy")).unwrap(), bytes);
     assert_eq!(fs::read(paths.auth()).unwrap(), bytes);
 }
 
@@ -406,11 +389,11 @@ fn import_retains_environment_reference_without_capturing_value() {
     let (_temp, paths) = setup(
         "model_provider='proxy'\n[model_providers.proxy]\nname='Proxy'\nenv_key='CODEX_SW_TEST_MISSING_KEY_79337'\n",
     );
-    import(&paths, "work");
-    let preset = switcher::load_preset(&paths, "work").unwrap();
+    import(&paths);
+    let preset = switcher::load_preset(&paths, "proxy").unwrap();
     assert!(preset.config.contains("CODEX_SW_TEST_MISSING_KEY_79337"));
     let before = fs::read(paths.config()).unwrap();
-    let error = switcher::switch(&paths, "work", AuthMode::Auto, false)
+    let error = switcher::switch(&paths, "proxy", AuthMode::Auto, false)
         .err()
         .unwrap()
         .to_string();
@@ -424,19 +407,18 @@ fn empty_token_import_can_be_reviewed_but_cannot_be_activated() {
     let result = switcher::import(
         &paths,
         ImportOptions {
-            name: Some("empty".into()),
             ..Default::default()
         },
     )
     .unwrap();
     assert!(!result.warnings.is_empty());
     assert!(
-        switcher::load_preset(&paths, "empty")
+        switcher::load_preset(&paths, "proxy")
             .unwrap()
             .config
             .contains("experimental_bearer_token = \"\"")
     );
-    assert!(switcher::switch(&paths, "empty", AuthMode::Auto, false).is_err());
+    assert!(switcher::switch(&paths, "proxy", AuthMode::Auto, false).is_err());
 }
 
 #[test]
@@ -445,8 +427,8 @@ fn bearer_with_native_flag_and_no_auth_file_remains_usable() {
         "{}experimental_bearer_token='dummy-token'\n",
         native_config()
     ));
-    import(&paths, "work");
-    switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
+    import(&paths);
+    switcher::switch(&paths, "proxy", AuthMode::Auto, false).unwrap();
     assert!(!paths.auth().exists());
 }
 
@@ -458,13 +440,12 @@ fn profiles_merge_provider_overrides_and_keep_source_untouched() {
     switcher::import(
         &paths,
         ImportOptions {
-            name: Some("saved".into()),
             profile: Some("work".into()),
             ..Default::default()
         },
     )
     .unwrap();
-    let preset = switcher::load_preset(&paths, "saved").unwrap();
+    let preset = switcher::load_preset(&paths, "proxy").unwrap();
     let doc = config::parse(&preset.config).unwrap();
     assert!(doc.get("model").is_none());
     assert_eq!(
@@ -483,8 +464,8 @@ fn legacy_profile_import_does_not_copy_legacy_selector_to_preset() {
     let (_temp, paths) = setup(
         "profile='old'\nmodel_provider='proxy'\n[model_providers.proxy]\nname='Proxy'\n[profiles.old]\nmodel='old-model'\n",
     );
-    import(&paths, "saved");
-    let preset = switcher::load_preset(&paths, "saved").unwrap();
+    import(&paths);
+    let preset = switcher::load_preset(&paths, "proxy").unwrap();
     let doc = config::parse(&preset.config).unwrap();
     assert!(doc.get("model").is_none());
     assert!(doc.get("profile").is_none());
@@ -494,13 +475,13 @@ fn legacy_profile_import_does_not_copy_legacy_selector_to_preset() {
 #[test]
 fn undo_restores_config_and_rejects_external_edits() {
     let (_temp, paths) = setup(&inline_config("dummy-a"));
-    import(&paths, "work");
+    import(&paths);
     let original = inline_config("dummy-b");
     fs::write(paths.config(), &original).unwrap();
-    switcher::switch(&paths, "work", AuthMode::Copy, false).unwrap();
+    switcher::switch(&paths, "proxy", AuthMode::Copy, false).unwrap();
     switcher::undo(&paths).unwrap();
     assert_eq!(fs::read_to_string(paths.config()).unwrap(), original);
-    switcher::switch(&paths, "work", AuthMode::Copy, false).unwrap();
+    switcher::switch(&paths, "proxy", AuthMode::Copy, false).unwrap();
     fs::write(paths.config(), "# changed externally\n").unwrap();
     assert!(switcher::undo(&paths).is_err());
     assert_eq!(
@@ -594,14 +575,11 @@ fn transaction_refuses_changes_since_the_planning_snapshot() {
 fn current_detects_a_changed_native_login() {
     let (_temp, paths) = setup(native_config());
     fs::write(paths.auth(), native_auth("dummy-a")).unwrap();
-    import(&paths, "a");
-    switcher::switch(&paths, "a", AuthMode::Copy, false).unwrap();
-    assert_eq!(switcher::current(&paths).unwrap()["name"], "a");
+    import(&paths);
+    switcher::switch(&paths, "proxy", AuthMode::Copy, false).unwrap();
+    assert_eq!(switcher::current(&paths).unwrap()["matches_saved"], true);
     fs::write(paths.auth(), native_auth("dummy-changed")).unwrap();
-    assert_eq!(
-        switcher::current(&paths).unwrap()["name"],
-        serde_json::Value::Null
-    );
+    assert_eq!(switcher::current(&paths).unwrap()["matches_saved"], false);
 }
 
 #[test]
@@ -621,11 +599,12 @@ fn oauth(refresh: &str) -> Vec<u8> {
 
 #[test]
 fn copy_mode_saves_refreshed_credentials_before_switching() {
-    let (_temp, paths) = setup(native_config());
+    let (_temp, paths) = setup(&native_config().replace("proxy", "a"));
     fs::write(paths.auth(), oauth("old-refresh")).unwrap();
-    import(&paths, "a");
+    import(&paths);
+    fs::write(paths.config(), native_config().replace("proxy", "b")).unwrap();
     fs::write(paths.auth(), native_auth("dummy-b")).unwrap();
-    import(&paths, "b");
+    import(&paths);
     switcher::switch(&paths, "a", AuthMode::Copy, false).unwrap();
     fs::write(paths.auth(), oauth("new-refresh")).unwrap();
     switcher::switch(&paths, "b", AuthMode::Copy, false).unwrap();
@@ -650,20 +629,160 @@ fn parse_errors_and_summaries_do_not_leak_secrets() {
     let error = switcher::import(
         &paths,
         ImportOptions {
-            name: Some("a".into()),
             ..Default::default()
         },
     )
     .err()
     .unwrap();
     assert!(!format!("{error:#}").contains("super-secret-raw"));
-    fs::write(paths.config(), inline_config("super-secret-raw")).unwrap();
-    import(&paths, "a");
+    fs::write(
+        paths.config(),
+        inline_config("super-secret-raw").replace(
+            "https://example.invalid/v1",
+            "https://user:super-secret-raw@example.invalid/v1?token=super-secret-raw#super-secret-raw",
+        ),
+    ).unwrap();
+    import(&paths);
     let summary = serde_json::to_string(
-        &config::summary(&switcher::load_preset(&paths, "a").unwrap()).unwrap(),
+        &config::summary(&switcher::load_preset(&paths, "proxy").unwrap()).unwrap(),
     )
     .unwrap();
     assert!(!summary.contains("super-secret-raw"));
+    assert!(summary.contains("https://example.invalid/v1 [参数已隐藏]"));
+}
+
+#[test]
+fn summaries_show_saved_endpoints_without_guessing_builtin_defaults() {
+    for (source, expected) in [
+        (
+            "model_provider='proxy'\n[model_providers.proxy]\nname='Proxy'\nbase_url='https://proxy.example/v1'\n",
+            Some("https://proxy.example/v1"),
+        ),
+        (
+            "model_provider='openai'\nopenai_base_url='https://gateway.example/v1'\n",
+            Some("https://gateway.example/v1"),
+        ),
+        ("model_provider='openai'\n", None),
+        ("model_provider='ollama'\n", None),
+    ] {
+        let doc = config::parse(source).unwrap();
+        let preset = config::Preset {
+            format_version: 1,
+            name: "work".into(),
+            provider: config::provider_id(&doc).unwrap().into(),
+            config: source.into(),
+            credential: config::Credential::Provider,
+            source: "test".into(),
+        };
+        assert_eq!(
+            config::summary(&preset).unwrap()["endpoint"].as_str(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn legacy_alias_records_are_selected_by_provider_without_rewriting_credentials() {
+    let original = native_config().replace("proxy", "Sionic");
+    let (_temp, paths) = setup(&original);
+    paths.prepare().unwrap();
+    let record = config::Preset {
+        format_version: 1,
+        name: "original".into(),
+        provider: "Sionic".into(),
+        config: original.clone(),
+        credential: config::Credential::NativeFile,
+        source: "legacy import".into(),
+    };
+    let stored = serde_json::to_vec(&record).unwrap();
+    fs::write(paths.preset("original"), &stored).unwrap();
+    let credential = native_auth("dummy-legacy");
+    fs::write(paths.credential("original"), &credential).unwrap();
+    fs::write(paths.auth(), &credential).unwrap();
+    assert!(switcher::switch(&paths, "original", AuthMode::Auto, true).is_err());
+    let result = switcher::switch(&paths, "Sionic", AuthMode::Auto, false).unwrap();
+    assert_eq!(result.provider, "Sionic");
+    assert_eq!(switcher::current(&paths).unwrap()["matches_saved"], true);
+    let active_auth = Snapshot::read(&paths.auth()).unwrap();
+    let imported = switcher::import(&paths, ImportOptions::default()).unwrap();
+    assert_eq!(imported.unchanged, ["Sionic"]);
+    assert_eq!(fs::read(paths.preset("original")).unwrap(), stored);
+    assert_eq!(fs::read(paths.credential("original")).unwrap(), credential);
+    assert!(!paths.preset("Sionic").exists());
+    assert!(!paths.credential("Sionic").exists());
+    let summary = config::summary(&switcher::load_provider(&paths, "Sionic").unwrap()).unwrap();
+    assert!(!summary.contains_key("name"));
+    assert_eq!(summary["provider"], "Sionic");
+    switcher::switch(&paths, "Sionic", AuthMode::Auto, false).unwrap();
+    assert_eq!(Snapshot::read(&paths.auth()).unwrap(), active_auth);
+    assert!(switcher::remove(&paths, "Sionic").is_err());
+    #[cfg(unix)]
+    assert_eq!(
+        fs::read_link(paths.auth()).unwrap(),
+        Path::new("codex-sw/credentials/auth.json.original")
+    );
+}
+
+#[test]
+fn ambiguous_legacy_provider_records_are_rejected_before_changes() {
+    let (_temp, paths) = setup(&inline_config("dummy-current"));
+    paths.prepare().unwrap();
+    for name in ["old-a", "old-b"] {
+        let record = config::Preset {
+            format_version: 1,
+            name: name.into(),
+            provider: "proxy".into(),
+            config: inline_config(name),
+            credential: config::Credential::Provider,
+            source: "legacy import".into(),
+        };
+        fs::write(paths.preset(name), serde_json::to_vec(&record).unwrap()).unwrap();
+    }
+    let before = fs::read(paths.config()).unwrap();
+    let error = switcher::switch(&paths, "proxy", AuthMode::Auto, false)
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("多条旧记录"));
+    assert!(switcher::import(&paths, ImportOptions::default()).is_err());
+    assert!(switcher::remove(&paths, "proxy").is_err());
+    assert_eq!(fs::read(paths.config()).unwrap(), before);
+    assert!(!paths.state().exists());
+    assert!(!paths.pending().exists());
+}
+
+#[test]
+fn batch_import_keeps_unicode_and_case_distinct_ids_in_portable_storage() {
+    let original = "model_provider='OpenAI'\n[model_providers.OpenAI]\nname='Display name'\n[model_providers.openai]\nname='Other display name'\n[model_providers.'示例']\nname='Display name'\n[model_providers.'a/b']\nname='Display name'\n[model_providers.CON]\nname='Display name'\n";
+    let (_temp, paths) = setup(original);
+    let result = switcher::import(
+        &paths,
+        ImportOptions {
+            all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(result.imported.len(), 5);
+    let records = switcher::list(&paths).unwrap();
+    let mut filenames = std::collections::HashSet::new();
+    for id in ["OpenAI", "openai", "示例", "a/b", "CON"] {
+        let record = switcher::load_provider(&paths, id).unwrap();
+        config::validate_name(&record.name).unwrap();
+        assert!(filenames.insert(record.name.to_ascii_lowercase()));
+        assert!(paths.preset(&record.name).exists());
+    }
+    assert_eq!(records.len(), 5);
+    let result = switcher::import(
+        &paths,
+        ImportOptions {
+            all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(result.unchanged.len(), 5);
+    assert!(result.imported.is_empty());
+    assert_eq!(fs::read_to_string(paths.config()).unwrap(), original);
 }
 
 #[test]
@@ -671,18 +790,9 @@ fn rejects_traversal_and_portability_conflicts() {
     for name in ["../escape", "a/b", "a\\b", "", "CON", "nul", "x."] {
         assert!(config::validate_name(name).is_err());
     }
-    let (_temp, paths) = setup(&inline_config("dummy"));
-    import(&paths, "work");
-    assert!(
-        switcher::import(
-            &paths,
-            ImportOptions {
-                name: Some("WORK".into()),
-                ..Default::default()
-            }
-        )
-        .is_err()
-    );
+    for provider in ["", " ", "bad\nprovider", "bad\u{1b}provider"] {
+        assert!(config::validate_provider_id(provider).is_err());
+    }
 }
 
 #[cfg(unix)]
@@ -691,15 +801,15 @@ fn unix_links_and_private_file_modes() {
     use std::os::unix::fs::PermissionsExt;
     let (_temp, paths) = setup(native_config());
     fs::write(paths.auth(), native_auth("dummy-key")).unwrap();
-    import(&paths, "a");
-    switcher::switch(&paths, "a", AuthMode::Symlink, false).unwrap();
+    import(&paths);
+    switcher::switch(&paths, "proxy", AuthMode::Symlink, false).unwrap();
     assert!(paths.auth().is_symlink());
     assert_eq!(
         fs::read_link(paths.auth()).unwrap(),
-        Path::new("codex-sw/credentials/auth.json.a")
+        Path::new("codex-sw/credentials/auth.json.proxy")
     );
     assert_eq!(
-        fs::metadata(paths.credential("a"))
+        fs::metadata(paths.credential("proxy"))
             .unwrap()
             .permissions()
             .mode()
@@ -712,7 +822,7 @@ fn unix_links_and_private_file_modes() {
     );
     fs::write(paths.auth(), native_auth("updated-key")).unwrap();
     assert_eq!(
-        fs::read(paths.credential("a")).unwrap(),
+        fs::read(paths.credential("proxy")).unwrap(),
         native_auth("updated-key")
     );
 }
@@ -721,12 +831,12 @@ fn unix_links_and_private_file_modes() {
 #[test]
 fn config_symlink_is_preserved_and_external_target_is_edited() {
     let (temp, paths) = setup(&inline_config("dummy-a"));
-    import(&paths, "a");
+    import(&paths);
     let target = temp.path().join("actual-config.toml");
     fs::rename(paths.config(), &target).unwrap();
     std::os::unix::fs::symlink(&target, paths.config()).unwrap();
     fs::write(&target, inline_config("dummy-b")).unwrap();
-    switcher::switch(&paths, "a", AuthMode::Auto, false).unwrap();
+    switcher::switch(&paths, "proxy", AuthMode::Auto, false).unwrap();
     assert!(paths.config().is_symlink());
     assert!(fs::read_to_string(target).unwrap().contains("dummy-a"));
 }

@@ -15,8 +15,8 @@ fn line(input: &mut impl BufRead, limit: usize) -> Result<String> {
         .take(limit as u64 + 1)
         .read_line(&mut text)
         .context("无法读取输入")?;
-    ensure!(count != 0, "输入已结束，未保存预设");
-    ensure!(text.len() <= limit, "输入超过大小限制，未保存预设");
+    ensure!(count != 0, "输入已结束，未保存 Provider");
+    ensure!(text.len() <= limit, "输入超过大小限制，未保存 Provider");
     Ok(text)
 }
 
@@ -29,13 +29,13 @@ fn block(input: &mut impl BufRead) -> Result<String> {
         }
         ensure!(
             text.len() + next.len() <= INPUT_LIMIT,
-            "输入超过大小限制，未保存预设"
+            "输入超过大小限制，未保存 Provider"
         );
         text.push_str(&next);
     }
 }
 
-fn provider(text: &str) -> Result<(String, String, DocumentMut)> {
+fn provider(text: &str) -> Result<(String, DocumentMut)> {
     let doc = config::parse(text)?;
     let id = if doc.get("model_provider").is_some() {
         config::provider_id(&doc)?.to_owned()
@@ -51,16 +51,17 @@ fn provider(text: &str) -> Result<(String, String, DocumentMut)> {
         definitions.iter().next().unwrap().0.to_owned()
     };
     let mut selected = config::selected_config(&doc, &id)?;
-    let name = config::definition(&selected, &id)
-        .and_then(|definition| definition.get("name"))
-        .and_then(|name| name.as_str())
-        .context("所选 provider 缺少字符串字段 name")?
-        .to_owned();
-    config::validate_name(&name)?;
     if config::builtin(&id) {
         ensure!(id == "openai", "该内置 provider 不支持 auth.json 认证");
     } else {
         let definition = &mut selected["model_providers"][&id];
+        ensure!(
+            definition
+                .get("name")
+                .and_then(|value| value.as_str())
+                .is_some(),
+            "provider 配置缺少字符串字段 name"
+        );
         for key in ["env_key", "experimental_bearer_token", "auth"] {
             ensure!(
                 definition.get(key).is_none(),
@@ -70,23 +71,23 @@ fn provider(text: &str) -> Result<(String, String, DocumentMut)> {
         definition["requires_openai_auth"] = value(true);
     }
     config::validate_provider(&selected, &id, false)?;
-    Ok((name, id, selected))
+    Ok((id, selected))
 }
 
 pub fn add(paths: &Paths, input: &mut impl BufRead, prompts: &mut impl Write) -> Result<String> {
     paths.require_clean()?;
     writeln!(
         prompts,
-        "添加预设：provider 配置 → auth.json；预设名称取自 provider 的 name。"
+        "添加 Provider：provider 配置 → auth.json；使用 [model_providers.<id>] 中的 ID。"
     )?;
-    let (name, id, selected) = loop {
+    let (id, selected) = loop {
         writeln!(
             prompts,
             "粘贴 provider 配置（TOML），单独输入一行 END 结束："
         )?;
         prompts.flush()?;
         let provider = provider(&block(input)?).and_then(|provider| {
-            switcher::check_new_name(paths, &provider.0)?;
+            switcher::check_new_provider(paths, &provider.0)?;
             Ok(provider)
         });
         match provider {
@@ -107,13 +108,13 @@ pub fn add(paths: &Paths, input: &mut impl BufRead, prompts: &mut impl Write) ->
         paths,
         Preset {
             format_version: 1,
-            name: name.clone(),
-            provider: id,
+            name: String::new(),
+            provider: id.clone(),
             config: selected.to_string(),
             credential: Credential::NativeFile,
             source: "interactive add".into(),
         },
         Some(auth),
     )?;
-    Ok(name)
+    Ok(id)
 }

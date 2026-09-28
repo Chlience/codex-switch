@@ -40,7 +40,7 @@
 
 ## 交互式添加验证
 
-新增 `codex-sw add` 无参数入口，依次粘贴 provider 配置与 auth.json，使用所选 provider 的 `name` 保存预设。Linux 上的 33 项集成测试通过，覆盖单个 provider 与完整配置、名称重复及大小写冲突、保存时发生的并发重名、无效内容重试、EOF 和输入大小限制，以及原始凭据字节保留。
+初版交互功能新增 `codex-sw add` 无参数入口，依次粘贴 provider 配置与 auth.json，使用所选 provider 的 `name` 保存预设。Linux 上的 33 项集成测试通过，覆盖单个 provider 与完整配置、名称重复及大小写冲突、保存时发生的并发重名、无效内容重试、EOF 和输入大小限制，以及原始凭据字节保留。
 
 使用已安装的 release 二进制完成了 Linux 终端交互验证：粘贴多行 TOML 和 JSON，以独立的 `END` 行结束，预设名称自动取自 `name`，凭据文件权限为 0600，当前配置未改变。格式检查、Linux Clippy 和 Windows MSVC 编译检查通过；本轮未运行 Windows/macOS 终端交互或真实模型请求。
 
@@ -48,9 +48,19 @@
 
 移除进程扫描后，切换、撤销和实际恢复事务成功时固定提示已有 Codex 实例需要重启。`use` 和 `doctor` 的 JSON 结果不再包含 `active_instances`。Linux 上的 34 项集成测试通过，覆盖切换与撤销的固定提示、预览和诊断不提示、无待恢复事务和失败操作不提示，以及原有认证与事务行为。
 
-配置格式测试覆盖仅为所选 provider 添加管理标记、配置块间空行、重复切换的文本一致性、切换同一 provider 的不同预设时更新标记、保留用户注释，以及撤销后恢复原始文本。行内表、点分键和带引号的 provider ID 均验证了配置值不变与 TOML 可重新解析。
+当时的配置格式测试覆盖仅为所选 provider 添加管理标记、配置块间空行、重复切换的文本一致性、切换同一 provider 的不同预设时更新标记、保留用户注释，以及撤销后恢复原始文本。行内表、点分键和带引号的 provider ID 均验证了配置值不变与 TOML 可重新解析。
 
 `cargo fmt --check`、Linux Clippy、Windows MSVC 编译检查和 Linux release 构建通过。本轮未运行 Windows/macOS 原生测试或真实模型请求。
+
+## 按 Provider ID 选择验证
+
+取消独立预设别名后，`add`、`use` 和 `remove` 直接使用 Provider ID，`import` 从配置中读取 ID；`list` 显示 Provider 和端点两列。Linux 上的 38 项集成测试通过，覆盖旧别名记录按 ID 选择、原有凭据文件与软链保留、重复 Provider 记录拒绝操作、区分大小写及中文 ID、批量导入时的文件名分配、端点敏感参数隐藏，以及原有模型参数保留、认证、撤销和恢复行为。
+
+`cargo fmt --check`、Linux Clippy、Windows MSVC 编译检查和 Linux release 构建通过。README 中的 TOML、JSON 示例、围栏代码块和相对链接检查通过；使用隔离目录和虚构凭据验证了导入、列表、预览、切换、诊断、撤销、添加和删除命令。当前环境未提供 `technical-documentation-writing` Skill，文档验证范围为上述检查。
+
+安装新版后，本机已有记录的列表、按 Provider ID 切换预览、当前配置查询和诊断均通过。逐项比较确认这些只读命令保留配置、认证文件、软链、权限和登记记录。随后仅更新当前 Provider 的管理注释，去掉旧别名标签；TOML 配置值、认证内容、软链、权限、登记记录和状态均保持不变。
+
+本轮未运行 Windows/macOS 原生测试或真实模型请求。
 
 ## 参考资料
 

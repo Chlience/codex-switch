@@ -41,7 +41,6 @@ pub struct State {
 
 #[derive(Default)]
 pub struct ImportOptions {
-    pub name: Option<String>,
     pub from: Option<PathBuf>,
     pub profile: Option<String>,
     pub provider: Option<String>,
@@ -94,8 +93,51 @@ pub fn list(paths: &Paths) -> Result<Vec<Preset>> {
             entries.push(load_preset(paths, name)?);
         }
     }
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries.sort_by(|a, b| a.provider.cmp(&b.provider).then(a.name.cmp(&b.name)));
     Ok(entries)
+}
+
+fn find_provider(paths: &Paths, id: &str) -> Result<Option<Preset>> {
+    config::validate_provider_id(id)?;
+    let matches = list(paths)?
+        .into_iter()
+        .filter(|p| p.provider == id)
+        .collect::<Vec<_>>();
+    ensure!(
+        matches.len() <= 1,
+        "Provider {id} 对应多条旧记录，无法唯一选择；请先整理 codex-sw/providers 中的重复记录，已有文件未修改"
+    );
+    Ok(matches.into_iter().next())
+}
+
+pub fn load_provider(paths: &Paths, id: &str) -> Result<Preset> {
+    find_provider(paths, id)?
+        .with_context(|| format!("未登记 Provider {id}；请使用 codex-sw list 查看可选项"))
+}
+
+fn storage_key(
+    paths: &Paths,
+    provider: &str,
+    reserved: &std::collections::HashSet<String>,
+) -> Result<String> {
+    let records = list(paths)?;
+    let available = |name: &str| {
+        !records.iter().any(|p| p.name.eq_ignore_ascii_case(name))
+            && !reserved.contains(&name.to_ascii_lowercase())
+            && !paths.preset(name).exists()
+            && !paths.credential(name).exists()
+    };
+    if config::validate_name(provider).is_ok() && available(provider) {
+        return Ok(provider.to_owned());
+    }
+    // Portable internal filenames also support Unicode, long and case-distinct IDs.
+    for index in 1u64.. {
+        let name = format!("provider-{index}");
+        if available(&name) {
+            return Ok(name);
+        }
+    }
+    anyhow::bail!("无法分配 Provider 存储路径")
 }
 
 pub fn state(paths: &Paths) -> Result<State> {
@@ -119,7 +161,7 @@ fn register_changes(paths: &Paths, preset: &Preset, auth: Option<&[u8]>) -> Resu
         };
         ensure!(
             equal && equal_auth,
-            "同名预设已存在且内容不同；请使用新名称导入，已有记录未覆盖"
+            "Provider 已登记且内容不同，已有记录未覆盖；请核对配置与凭据"
         );
         return Ok(Vec::new());
     }
@@ -202,23 +244,19 @@ pub fn import(paths: &Paths, options: ImportOptions) -> Result<ImportResult> {
         dry_run: options.dry_run,
     };
     let mut changes = Vec::new();
-    let mut names = std::collections::HashSet::new();
+    let mut reserved = std::collections::HashSet::new();
     for id in ids {
-        let name = if options.all {
-            id.clone()
-        } else {
-            options.name.clone().context("请指定预设名称")?
-        };
-        config::validate_name(&name)?;
-        ensure!(
-            names.insert(name.to_ascii_lowercase()),
-            "导入名称存在大小写冲突；请逐个指定名称导入"
-        );
+        config::validate_provider_id(&id)?;
+        let name = find_provider(paths, &id)?
+            .map(|p| p.name)
+            .map(Ok)
+            .unwrap_or_else(|| storage_key(paths, &id, &reserved))?;
+        reserved.insert(name.to_ascii_lowercase());
         let selected = config::selected_config(&doc, &id)?;
         // Import preserves malformed/ambiguous values for review; activation validates them.
         if let Err(error) = config::validate_provider(&selected, &id, false) {
             result.warnings.push(format!(
-                "{name}: {error}；已保留原文，激活前需修正来源并重新导入"
+                "{id}: {error}；已保留原文，激活前需修正来源并重新导入"
             ));
         }
         let mut auth = None;
@@ -257,14 +295,14 @@ pub fn import(paths: &Paths, options: ImportOptions) -> Result<ImportResult> {
             config::validate_auth(bytes)?;
         }
         if matches!(credential, Credential::MissingNative) {
-            result.warnings.push(format!(
-                "{name}: 原生凭据待关联；可使用 --auth-file 显式导入"
-            ));
+            result
+                .warnings
+                .push(format!("{id}: 原生凭据待关联；可使用 --auth-file 显式导入"));
         }
         let preset = Preset {
             format_version: 1,
             name: name.clone(),
-            provider: id,
+            provider: id.clone(),
             config: selected.to_string(),
             credential,
             source: format!(
@@ -278,9 +316,9 @@ pub fn import(paths: &Paths, options: ImportOptions) -> Result<ImportResult> {
         };
         let new_changes = register_changes(paths, &preset, auth.as_deref())?;
         if new_changes.is_empty() {
-            result.unchanged.push(name);
+            result.unchanged.push(id);
         } else {
-            result.imported.push(name);
+            result.imported.push(id);
             changes.extend(new_changes);
         }
     }
@@ -290,19 +328,16 @@ pub fn import(paths: &Paths, options: ImportOptions) -> Result<ImportResult> {
     Ok(result)
 }
 
-pub fn check_new_name(paths: &Paths, name: &str) -> Result<()> {
-    config::validate_name(name)?;
+pub fn check_new_provider(paths: &Paths, id: &str) -> Result<()> {
+    config::validate_provider_id(id)?;
     ensure!(
-        !list(paths)?
-            .iter()
-            .any(|preset| preset.name.eq_ignore_ascii_case(name)),
-        "预设名称已存在（不区分大小写），请使用其他名称"
+        !list(paths)?.iter().any(|preset| preset.provider == id),
+        "Provider ID 已存在，请使用其他 Provider ID"
     );
     Ok(())
 }
 
 pub fn add(paths: &Paths, mut preset: Preset, auth: Option<Vec<u8>>) -> Result<()> {
-    config::validate_name(&preset.name)?;
     let doc = config::parse(&preset.config)?;
     ensure!(
         config::provider_id(&doc)? == preset.provider,
@@ -316,29 +351,36 @@ pub fn add(paths: &Paths, mut preset: Preset, auth: Option<Vec<u8>>) -> Result<(
     }
     let _lock = paths.lock()?;
     paths.require_clean()?;
-    check_new_name(paths, &preset.name)?;
+    check_new_provider(paths, &preset.provider)?;
+    preset.name = storage_key(paths, &preset.provider, &Default::default())?;
     let changes = register_changes(paths, &preset, auth.as_deref())?;
     storage::execute(paths, Journal::new(changes, false))
 }
 
 #[derive(Serialize)]
 pub struct SwitchResult {
-    pub name: String,
+    pub provider: String,
     pub changed_keys: Vec<String>,
     pub auth_changed: bool,
     pub dry_run: bool,
     pub warnings: Vec<String>,
 }
 
-pub fn switch(paths: &Paths, name: &str, mode: AuthMode, dry_run: bool) -> Result<SwitchResult> {
+pub fn switch(
+    paths: &Paths,
+    provider: &str,
+    mode: AuthMode,
+    dry_run: bool,
+) -> Result<SwitchResult> {
     let _lock = if dry_run { None } else { Some(paths.lock()?) };
     paths.require_clean()?;
-    let preset = load_preset(paths, name)?;
+    let preset = load_provider(paths, provider)?;
+    let name = preset.name.as_str();
     let selected = config::parse(&preset.config)?;
     let warnings = config::validate_provider(&selected, &preset.provider, true)?;
     ensure!(
         !matches!(preset.credential, Credential::MissingNative),
-        "该预设缺少原生凭据；请用 --auth-file 重新导入到新名称"
+        "该 Provider 缺少原生凭据；请核对来源及 --auth-file 后重新登记"
     );
     // Keep the snapshot that produced the edit, so a later read cannot hide a concurrent edit.
     let config_path = paths.config_target()?;
@@ -438,7 +480,7 @@ pub fn switch(paths: &Paths, name: &str, mode: AuthMode, dry_run: bool) -> Resul
         Snapshot::file(serde_json::to_vec_pretty(&next_state)?),
     )?);
     let result = SwitchResult {
-        name: name.to_owned(),
+        provider: preset.provider.clone(),
         changed_keys: config::changed_keys(&current, &next, &preset.provider),
         auth_changed,
         dry_run,
@@ -470,14 +512,15 @@ pub fn undo(paths: &Paths) -> Result<()> {
     storage::execute(paths, Journal::new(reverse, false))
 }
 
-pub fn remove(paths: &Paths, name: &str) -> Result<()> {
-    config::validate_name(name)?;
+pub fn remove(paths: &Paths, provider: &str) -> Result<()> {
     let _lock = paths.lock()?;
     paths.require_clean()?;
+    let preset = load_provider(paths, provider)?;
+    let name = preset.name.as_str();
     let status = state(paths)?;
     ensure!(
         status.name.as_deref() != Some(name) && status.auth_owner.as_deref() != Some(name),
-        "该预设或凭据仍在使用，请先切换"
+        "该 Provider 或凭据仍在使用，请先切换"
     );
     load_preset(paths, name)?;
     // Credentials remain recoverable in the private archive; remove only the registration.
@@ -526,9 +569,9 @@ pub fn current(paths: &Paths) -> Result<serde_json::Value> {
             };
             same_config && same_auth
         })
-        .map(|p| p.name);
+        .is_some();
     Ok(
-        serde_json::json!({"scope": "用户默认配置（启动参数、profile、项目或管理配置可能覆盖）", "config_path": paths.config(), "name": matched, "provider": id,
+        serde_json::json!({"scope": "用户默认配置（启动参数、profile、项目或管理配置可能覆盖）", "config_path": paths.config(), "matches_saved": matched, "provider": id,
         "model": doc.get("model").and_then(|v| v.as_str()), "auth_sources": config::auth_sources(&doc, id), "auth_is_symlink": paths.auth().is_symlink(), "auth_exists": paths.auth().exists(), "pending_transaction": paths.pending().exists()}),
     )
 }

@@ -18,11 +18,21 @@ pub enum Credential {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Preset {
     pub format_version: u32,
+    // Version-1 storage key, retained so existing credential links and journals stay valid.
+    // User-facing commands select `provider`, never this internal key.
     pub name: String,
     pub provider: String,
     pub config: String,
     pub credential: Credential,
     pub source: String,
+}
+
+pub fn validate_provider_id(id: &str) -> Result<()> {
+    ensure!(
+        !id.trim().is_empty() && !id.chars().any(char::is_control),
+        "Provider ID 不能为空或包含控制字符"
+    );
+    Ok(())
 }
 
 pub fn validate_name(name: &str) -> Result<()> {
@@ -146,7 +156,7 @@ fn expand_inline_table(key: &mut toml_edit::KeyMut<'_>, item: &mut Item) {
     }
 }
 
-fn format_providers(doc: &mut DocumentMut, managed_id: Option<(&str, &str)>) -> Result<()> {
+fn format_providers(doc: &mut DocumentMut, managed_id: Option<&str>) -> Result<()> {
     let Some((mut key, item)) = doc.as_table_mut().get_key_value_mut("model_providers") else {
         return Ok(());
     };
@@ -168,22 +178,20 @@ fn format_providers(doc: &mut DocumentMut, managed_id: Option<(&str, &str)>) -> 
             .and_then(|s| s.as_str())
             .unwrap_or("");
         let mut prefix = prefix.trim_start_matches(['\r', '\n']).to_owned();
-        if let Some((selected, name)) = managed_id
-            && id == selected
-        {
-            validate_name(name)?;
+        if managed_id.is_some_and(|selected| id == selected) {
             // Replace only our own marker; keep the provider's other comments.
             prefix = prefix
                 .split_inclusive('\n')
                 .filter(|line| {
-                    !line
-                        .trim()
-                        .strip_prefix("# Managed by codex-sw (preset: ")
-                        .and_then(|s| s.strip_suffix(')'))
-                        .is_some_and(|s| validate_name(s).is_ok())
+                    line.trim() != "# Managed by codex-sw"
+                        && !line
+                            .trim()
+                            .strip_prefix("# Managed by codex-sw (preset: ")
+                            .and_then(|s| s.strip_suffix(')'))
+                            .is_some_and(|s| validate_name(s).is_ok())
                 })
                 .collect();
-            prefix = format!("# Managed by codex-sw (preset: {name})\n{prefix}");
+            prefix = format!("# Managed by codex-sw\n{prefix}");
         }
         table.decor_mut().set_prefix(format!("\n{prefix}"));
     }
@@ -242,8 +250,7 @@ pub fn apply(current: &DocumentMut, preset: &Preset) -> Result<DocumentMut> {
     }
     format_providers(
         &mut next,
-        definition(&selected, &preset.provider)
-            .map(|_| (preset.provider.as_str(), preset.name.as_str())),
+        definition(&selected, &preset.provider).map(|_| preset.provider.as_str()),
     )?;
     match &preset.credential {
         Credential::NativeFile => next["cli_auth_credentials_store"] = value("file"),
@@ -280,6 +287,7 @@ pub fn auth_sources(doc: &DocumentMut, id: &str) -> Vec<String> {
 }
 
 pub fn validate_provider(doc: &DocumentMut, id: &str, check_env: bool) -> Result<Vec<String>> {
+    validate_provider_id(id)?;
     let mut warnings = Vec::new();
     for key in SETTINGS {
         if let Some(item) = doc.get(key) {
@@ -468,10 +476,20 @@ pub fn changed_keys(before: &DocumentMut, after: &DocumentMut, id: &str) -> Vec<
 }
 
 pub fn summary(preset: &Preset) -> Result<BTreeMap<String, serde_json::Value>> {
+    validate_provider_id(&preset.provider)?;
     let doc = parse(&preset.config)?;
+    let endpoint = definition(&doc, &preset.provider)
+        .and_then(|def| def.get("base_url"))
+        .and_then(Item::as_str)
+        .or_else(|| {
+            (preset.provider == "openai")
+                .then(|| doc.get("openai_base_url").and_then(Item::as_str))
+                .flatten()
+        })
+        .map(endpoint_summary);
     Ok(BTreeMap::from([
-        ("name".into(), preset.name.clone().into()),
         ("provider".into(), preset.provider.clone().into()),
+        ("endpoint".into(), endpoint.into()),
         (
             "auth_sources".into(),
             serde_json::json!(auth_sources(&doc, &preset.provider)),
@@ -481,4 +499,30 @@ pub fn summary(preset: &Preset) -> Result<BTreeMap<String, serde_json::Value>> {
             serde_json::to_value(&preset.credential)?,
         ),
     ]))
+}
+
+fn endpoint_summary(url: &str) -> String {
+    // User information, queries and fragments can contain credentials.
+    let (base, suffix) = url
+        .split_once(['?', '#'])
+        .map_or((url, ""), |(base, _)| (base, " [参数已隐藏]"));
+    let base = if let Some((scheme, rest)) = base.split_once("://") {
+        let (authority, path) = rest.find('/').map_or((rest, ""), |i| rest.split_at(i));
+        let authority = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        format!("{scheme}://{authority}{path}")
+    } else {
+        base.to_owned()
+    };
+    let mut safe = String::with_capacity(base.len() + suffix.len());
+    for c in base.chars() {
+        if c.is_control() {
+            safe.extend(c.escape_default());
+        } else {
+            safe.push(c);
+        }
+    }
+    safe.push_str(suffix);
+    safe
 }

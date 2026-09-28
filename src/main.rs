@@ -7,6 +7,7 @@ use codex_sw::{
 };
 use std::{io::Read, path::PathBuf};
 use toml_edit::{DocumentMut, Item, Table, value};
+use unicode_width::UnicodeWidthStr;
 
 mod interactive;
 
@@ -34,8 +35,6 @@ struct Cli {
 enum Commands {
     /// 从已有 config.toml 或 profile 导入，保持原认证方式
     Import {
-        #[arg(required_unless_present = "all", conflicts_with = "all")]
-        name: Option<String>,
         #[arg(long)]
         from: Option<PathBuf>,
         #[arg(long, conflicts_with = "all")]
@@ -51,25 +50,23 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
-    /// 添加 provider 预设；不带参数时逐步粘贴配置和 auth.json
+    /// 添加 Provider；不带参数时逐步粘贴配置和 auth.json
     Add {
-        name: Option<String>,
-        #[arg(long, requires = "name")]
         provider: Option<String>,
-        #[arg(long, requires = "name")]
+        #[arg(long, requires = "provider")]
         base_url: Option<String>,
-        #[arg(long, requires = "name", conflicts_with_all = ["bearer_token_stdin", "auth_file"])]
+        #[arg(long, requires = "provider", conflicts_with_all = ["bearer_token_stdin", "auth_file"])]
         env_key: Option<String>,
-        #[arg(long, requires = "name", conflicts_with = "auth_file")]
+        #[arg(long, requires = "provider", conflicts_with = "auth_file")]
         bearer_token_stdin: bool,
-        #[arg(long, requires = "name")]
+        #[arg(long, requires = "provider")]
         auth_file: Option<PathBuf>,
     },
-    /// 显示预设名称和 provider 表格，不显示凭据
+    /// 显示 Provider 和端点表格，不显示凭据
     List,
     /// 切换默认 provider，并提醒已有实例重启
     Use {
-        name: String,
+        provider: String,
         #[arg(long, value_enum, default_value = "auto")]
         auth_mode: AuthMode,
         #[arg(long)]
@@ -83,8 +80,8 @@ enum Commands {
     Undo,
     /// 恢复中断的切换事务；保留存在外部修改的文件
     Recover,
-    /// 移除未使用的预设登记；凭据及历史备份保留
-    Remove { name: String },
+    /// 移除未使用的 Provider 登记；凭据及历史备份保留
+    Remove { provider: String },
 }
 
 fn output(json: bool, value: serde_json::Value, message: impl AsRef<str>) -> Result<()> {
@@ -100,7 +97,6 @@ fn run(cli: Cli) -> Result<()> {
     let paths = Paths::new(cli.codex_home)?;
     match cli.command {
         Commands::Import {
-            name,
             from,
             profile,
             provider,
@@ -111,7 +107,6 @@ fn run(cli: Cli) -> Result<()> {
             let result = switcher::import(
                 &paths,
                 ImportOptions {
-                    name,
                     from,
                     profile,
                     provider,
@@ -124,7 +119,7 @@ fn run(cli: Cli) -> Result<()> {
                 eprintln!("警告：{warning}");
             }
             let text = format!(
-                "{} {} 个预设；{} 个已有相同记录。{}",
+                "{} {} 个 Provider；{} 个已有相同记录。{}",
                 if dry_run { "预计导入" } else { "已导入" },
                 result.imported.len(),
                 result.unchanged.len(),
@@ -137,28 +132,25 @@ fn run(cli: Cli) -> Result<()> {
             output(cli.json, serde_json::to_value(result)?, text)
         }
         Commands::Add {
-            name,
             provider,
             base_url,
             env_key,
             bearer_token_stdin,
             auth_file,
         } => {
-            let Some(name) = name else {
-                let name = interactive::add(
+            let Some(id) = provider else {
+                let id = interactive::add(
                     &paths,
                     &mut std::io::stdin().lock(),
                     &mut std::io::stderr().lock(),
                 )?;
                 return output(
                     cli.json,
-                    serde_json::json!({"added":name}),
-                    format!("已保存预设 {name}。使用 codex-sw use {name} 激活。"),
+                    serde_json::json!({"added":id}),
+                    format!("已保存 Provider {id}。使用 codex-sw use {id} 激活。"),
                 );
             };
-            config::validate_name(&name)?;
-            let id = provider.unwrap_or_else(|| name.clone());
-            ensure!(!id.trim().is_empty(), "provider ID 不能为空");
+            config::validate_provider_id(&id)?;
             let mut doc = DocumentMut::new();
             doc["model_provider"] = value(&id);
             let mut auth = None;
@@ -181,7 +173,7 @@ fn run(cli: Cli) -> Result<()> {
                 };
             } else {
                 let mut def = Table::new();
-                def["name"] = value(&name);
+                def["name"] = value(&id);
                 def["base_url"] = value(base_url.context("自定义 provider 需要 --base-url")?);
                 def["wire_api"] = value("responses");
                 if let Some(key) = env_key {
@@ -213,8 +205,8 @@ fn run(cli: Cli) -> Result<()> {
             }
             let preset = Preset {
                 format_version: 1,
-                name: name.clone(),
-                provider: id,
+                name: String::new(),
+                provider: id.clone(),
                 config: doc.to_string(),
                 credential,
                 source: "add".into(),
@@ -222,8 +214,8 @@ fn run(cli: Cli) -> Result<()> {
             switcher::add(&paths, preset, auth)?;
             output(
                 cli.json,
-                serde_json::json!({"added":name}),
-                format!("已保存预设 {name}。"),
+                serde_json::json!({"added":id}),
+                format!("已保存 Provider {id}。"),
             )
         }
         Commands::List => {
@@ -233,29 +225,42 @@ fn run(cli: Cli) -> Result<()> {
                 .map(config::summary)
                 .collect::<Result<Vec<_>>>()?;
             let text = if presets.is_empty() {
-                "尚无预设；使用 import 或 add 添加。".to_owned()
+                "尚无 Provider；使用 import 或 add 添加。".to_owned()
             } else {
-                // Preset names are ASCII; the Chinese heading occupies eight columns.
-                let width = presets.iter().map(|p| p.name.len()).max().unwrap().max(8);
+                let width = presets
+                    .iter()
+                    .map(|p| p.provider.width())
+                    .max()
+                    .unwrap()
+                    .max(8);
                 let mut lines = vec![
-                    format!("预设名称{}  Provider", " ".repeat(width - 8)),
-                    format!("{}  ────────", "─".repeat(width)),
+                    format!("Provider{}  端点", " ".repeat(width - 8)),
+                    format!("{}  ────", "─".repeat(width)),
                 ];
-                lines.extend(
-                    presets
-                        .iter()
-                        .map(|p| format!("{:<width$}  {}", p.name, p.provider)),
-                );
+                lines.extend(summaries.iter().map(|row| {
+                    let provider = row["provider"].as_str().unwrap();
+                    let endpoint = row["endpoint"].as_str().unwrap_or_else(|| {
+                        if config::builtin(provider) {
+                            "Codex 默认"
+                        } else {
+                            "未配置"
+                        }
+                    });
+                    format!(
+                        "{provider}{}  {endpoint}",
+                        " ".repeat(width - provider.width())
+                    )
+                }));
                 lines.join("\n")
             };
             output(cli.json, serde_json::to_value(summaries)?, text)
         }
         Commands::Use {
-            name,
+            provider,
             auth_mode,
             dry_run,
         } => {
-            let result = switcher::switch(&paths, &name, auth_mode, dry_run)?;
+            let result = switcher::switch(&paths, &provider, auth_mode, dry_run)?;
             for warning in &result.warnings {
                 eprintln!("警告：{warning}");
             }
@@ -264,22 +269,26 @@ fn run(cli: Cli) -> Result<()> {
             }
             let text = if dry_run {
                 format!(
-                    "预览切换到 {name}：\n配置字段：{}\n更换 auth.json：{}\n未写入文件。",
+                    "预览切换到 {provider}：\n配置字段：{}\n更换 auth.json：{}\n未写入文件。",
                     result.changed_keys.join(", "),
                     result.auth_changed
                 )
             } else {
-                format!("已切换到 {name}。")
+                format!("已切换到 {provider}。")
             };
             output(cli.json, serde_json::to_value(result)?, text)
         }
         Commands::Current => {
             let data = switcher::current(&paths)?;
             let text = format!(
-                "预设：{}\n默认 provider：{}\n默认模型：{}\n配置：{}\n{}",
-                data["name"].as_str().unwrap_or("未匹配已保存预设"),
+                "默认 Provider：{}\n默认模型：{}\n与保存记录一致：{}\n配置：{}\n{}",
                 data["provider"].as_str().unwrap_or_default(),
                 data["model"].as_str().unwrap_or("Codex 默认"),
+                if data["matches_saved"].as_bool() == Some(true) {
+                    "是"
+                } else {
+                    "否"
+                },
                 paths.config().display(),
                 data["scope"].as_str().unwrap_or_default()
             );
@@ -317,12 +326,12 @@ fn run(cli: Cli) -> Result<()> {
                 },
             )
         }
-        Commands::Remove { name } => {
-            switcher::remove(&paths, &name)?;
+        Commands::Remove { provider } => {
+            switcher::remove(&paths, &provider)?;
             output(
                 cli.json,
-                serde_json::json!({"removed":name, "credentials_retained":true}),
-                "已移除预设登记；凭据文件及事务历史保留，可用于恢复。",
+                serde_json::json!({"removed":provider, "credentials_retained":true}),
+                "已移除 Provider 登记；凭据文件及事务历史保留，可用于恢复。",
             )
         }
     }
