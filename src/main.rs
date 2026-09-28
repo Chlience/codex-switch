@@ -55,8 +55,6 @@ enum Commands {
         provider: Option<String>,
         #[arg(long)]
         base_url: Option<String>,
-        #[arg(long)]
-        model: Option<String>,
         #[arg(long, conflicts_with_all = ["bearer_token_stdin", "auth_file"])]
         env_key: Option<String>,
         #[arg(long, conflicts_with = "auth_file")]
@@ -64,7 +62,7 @@ enum Commands {
         #[arg(long)]
         auth_file: Option<PathBuf>,
     },
-    /// 列出已保存的预设，不显示凭据
+    /// 显示预设名称和 provider 表格，不显示凭据
     List,
     /// 切换默认 provider；存在活跃实例时提醒重启并继续执行
     Use {
@@ -139,7 +137,6 @@ fn run(cli: Cli) -> Result<()> {
             name,
             provider,
             base_url,
-            model,
             env_key,
             bearer_token_stdin,
             auth_file,
@@ -149,9 +146,6 @@ fn run(cli: Cli) -> Result<()> {
             ensure!(!id.trim().is_empty(), "provider ID 不能为空");
             let mut doc = DocumentMut::new();
             doc["model_provider"] = value(&id);
-            if let Some(model) = model {
-                doc["model"] = value(model);
-            }
             let mut auth = None;
             let credential;
             if config::builtin(&id) {
@@ -226,18 +220,18 @@ fn run(cli: Cli) -> Result<()> {
             let text = if presets.is_empty() {
                 "尚无预设；使用 import 或 add 添加。".to_owned()
             } else {
-                summaries
-                    .iter()
-                    .map(|p| {
-                        format!(
-                            "{}\t{}\t{}",
-                            p["name"].as_str().unwrap_or_default(),
-                            p["provider"].as_str().unwrap_or_default(),
-                            p["model"].as_str().unwrap_or("默认模型")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                // Preset names are ASCII; the Chinese heading occupies eight columns.
+                let width = presets.iter().map(|p| p.name.len()).max().unwrap().max(8);
+                let mut lines = vec![
+                    format!("预设名称{}  Provider", " ".repeat(width - 8)),
+                    format!("{}  ────────", "─".repeat(width)),
+                ];
+                lines.extend(
+                    presets
+                        .iter()
+                        .map(|p| format!("{:<width$}  {}", p.name, p.provider)),
+                );
+                lines.join("\n")
             };
             output(cli.json, serde_json::to_value(summaries)?, text)
         }

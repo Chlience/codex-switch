@@ -30,7 +30,15 @@
 
 本机只能执行 Linux 测试和 Windows 目标编译检查；未声称其他平台 CI 已运行。事务恢复测试通过构造中断状态验证恢复行为，没有模拟断电、文件系统故障或真实 OAuth 服务。进程检测和文件内容变化检查不能替代会话认证隔离。
 
-参考资料：
+## Provider 切换范围回归
+
+后续将切换范围收窄到 provider 地址和认证配置。在 Linux x86_64 上，`cargo test --locked` 的 28 项集成测试通过，覆盖新旧预设保留当前模型参数及未设置状态、模型变化后的预设匹配与重复导入、带表头的列表、长名称对齐，以及拒绝 `add --model`。
+
+子进程测试移至 `tests/cli.rs`，通过 CLI 执行配置写入；持有文件锁的库测试保留在 `tests/workflows.rs`。两个测试程序分别连续运行 20 次，均通过，未再复现原先并行启动子进程时出现的文件锁竞争。
+
+`cargo fmt --check`、Linux 的 `cargo clippy --locked --all-targets -- -D warnings` 和 Windows MSVC 的 `cargo check --locked --all-targets --target x86_64-pc-windows-msvc` 均通过，release 二进制已构建。本轮未执行 Windows/macOS 原生运行时测试，也未重跑上文使用 Codex CLI 0.156.1 的模型请求兼容性案例。
+
+## 参考资料
 
 - [Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)
 - [Codex 高级配置](https://learn.chatgpt.com/docs/config-file/config-advanced)

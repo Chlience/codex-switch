@@ -182,7 +182,6 @@ pub fn import(paths: &Paths, options: ImportOptions) -> Result<ImportResult> {
         };
         config::merge_layer(&mut doc, &layer);
     }
-    config::resolve_catalog(&mut doc, parent);
     let active = config::provider_id(&doc)?.to_owned();
     let ids = if options.all {
         let mut ids = doc
@@ -292,9 +291,16 @@ pub fn import(paths: &Paths, options: ImportOptions) -> Result<ImportResult> {
     Ok(result)
 }
 
-pub fn add(paths: &Paths, preset: Preset, auth: Option<Vec<u8>>) -> Result<()> {
+pub fn add(paths: &Paths, mut preset: Preset, auth: Option<Vec<u8>>) -> Result<()> {
     config::validate_name(&preset.name)?;
-    config::validate_provider(&config::parse(&preset.config)?, &preset.provider, false)?;
+    let doc = config::parse(&preset.config)?;
+    ensure!(
+        config::provider_id(&doc)? == preset.provider,
+        "预设的 provider 与配置不一致"
+    );
+    let selected = config::selected_config(&doc, &preset.provider)?;
+    config::validate_provider(&selected, &preset.provider, false)?;
+    preset.config = selected.to_string();
     if let Some(bytes) = &auth {
         config::validate_auth(bytes)?;
     }

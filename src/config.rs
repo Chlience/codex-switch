@@ -1,21 +1,10 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 use toml_edit::{DocumentMut, Item, Table, value};
 
-pub const SETTINGS: &[&str] = &[
-    "model",
-    "model_provider",
-    "model_reasoning_effort",
-    "model_reasoning_summary",
-    "model_verbosity",
-    "model_context_window",
-    "model_auto_compact_token_limit",
-    "model_supports_reasoning_summaries",
-    "model_catalog_json",
-    "openai_base_url",
-    "service_tier",
-];
+// Only provider routing settings belong to a preset. Legacy model fields are ignored.
+pub const SETTINGS: &[&str] = &["model_provider", "openai_base_url"];
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -218,16 +207,7 @@ pub fn auth_sources(doc: &DocumentMut, id: &str) -> Vec<String> {
 
 pub fn validate_provider(doc: &DocumentMut, id: &str, check_env: bool) -> Result<Vec<String>> {
     let mut warnings = Vec::new();
-    for key in [
-        "model",
-        "model_provider",
-        "model_reasoning_effort",
-        "model_reasoning_summary",
-        "model_verbosity",
-        "model_catalog_json",
-        "openai_base_url",
-        "service_tier",
-    ] {
+    for key in SETTINGS {
         if let Some(item) = doc.get(key) {
             ensure!(
                 item.as_str().is_some_and(|s| !s.trim().is_empty()),
@@ -419,13 +399,6 @@ pub fn summary(preset: &Preset) -> Result<BTreeMap<String, serde_json::Value>> {
         ("name".into(), preset.name.clone().into()),
         ("provider".into(), preset.provider.clone().into()),
         (
-            "model".into(),
-            doc.get("model")
-                .and_then(Item::as_str)
-                .map(Into::into)
-                .unwrap_or(serde_json::Value::Null),
-        ),
-        (
             "auth_sources".into(),
             serde_json::json!(auth_sources(&doc, &preset.provider)),
         ),
@@ -434,15 +407,4 @@ pub fn summary(preset: &Preset) -> Result<BTreeMap<String, serde_json::Value>> {
             serde_json::to_value(&preset.credential)?,
         ),
     ]))
-}
-
-pub fn resolve_catalog(doc: &mut DocumentMut, source_dir: &Path) {
-    if let Some(path) = doc
-        .get("model_catalog_json")
-        .and_then(Item::as_str)
-        .map(str::to_owned)
-        && Path::new(&path).is_relative()
-    {
-        doc["model_catalog_json"] = value(source_dir.join(path).to_string_lossy().as_ref());
-    }
 }

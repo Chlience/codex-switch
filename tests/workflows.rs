@@ -5,12 +5,9 @@ use codex_sw::{
     switcher::{self, AuthMode, ImportOptions},
 };
 use serde_json::json;
+use std::fs;
 #[cfg(unix)]
 use std::path::Path;
-use std::{
-    fs,
-    process::{Child, Command, Stdio},
-};
 use tempfile::TempDir;
 
 fn setup(config: &str) -> (TempDir, Paths) {
@@ -71,12 +68,151 @@ fn import_preserves_source_and_switch_preserves_unrelated_settings() {
     .unwrap();
     switcher::switch(&paths, "work", AuthMode::Auto, false, quiet_scan()).unwrap();
     let switched = fs::read_to_string(paths.config()).unwrap();
-    assert!(switched.contains("model = \"model-a\""));
+    assert!(switched.contains("model = \"other-model\""));
+    assert!(switched.contains("experimental_bearer_token = \"dummy-a\""));
     assert!(switched.contains("# user comment"));
     assert!(switched.contains("# provider note"));
     assert!(switched.contains("command = \"example-tool\" # retained"));
     assert!(switched.contains("shell_snapshot = false"));
     assert_eq!(switcher::current(&paths).unwrap()["name"], "work");
+}
+
+#[test]
+fn new_and_legacy_presets_preserve_current_and_absent_model_settings() {
+    let saved_settings = r#"model = "saved-model"
+model_reasoning_effort = "low"
+model_reasoning_summary = "auto"
+model_verbosity = "low"
+model_context_window = 100000
+model_auto_compact_token_limit = 80000
+model_supports_reasoning_summaries = false
+model_catalog_json = "./saved-catalog.json"
+service_tier = "priority"
+"#;
+    let current_settings = r#"model = "current-model" # keep model comment
+model_reasoning_effort = "high"
+model_reasoning_summary = "detailed"
+model_verbosity = "high"
+model_context_window = 200000
+model_auto_compact_token_limit = 160000
+model_supports_reasoning_summaries = true
+model_catalog_json = "./current-catalog.json"
+service_tier = "flex"
+"#;
+    let source = format!(
+        "{saved_settings}{}",
+        inline_config("dummy-saved").replace("model = \"model-a\"\n", "")
+    );
+    let saved_doc = config::parse(saved_settings).unwrap();
+    for legacy in [false, true] {
+        for settings in [current_settings, ""] {
+            let (_temp, paths) = setup(&source);
+            import(&paths, "work");
+            let mut preset = switcher::load_preset(&paths, "work").unwrap();
+            let selected = config::parse(&preset.config).unwrap();
+            for (key, _) in saved_doc.iter() {
+                assert!(selected.get(key).is_none(), "import captured {key}");
+            }
+            if legacy {
+                // Existing version-1 records may contain stale or invalid model values.
+                preset.config = format!("{saved_settings}{}", preset.config)
+                    .replace("model = \"saved-model\"", "model = \"\"");
+                fs::write(paths.preset("work"), serde_json::to_vec(&preset).unwrap()).unwrap();
+            }
+            assert!(!config::summary(&preset).unwrap().contains_key("model"));
+            let saved_bytes = fs::read(paths.preset("work")).unwrap();
+            let active = format!(
+                "{settings}model_provider = 'other'\n[model_providers.other]\nname='Other'\nbase_url='https://other.invalid/v1'\n[models.new_thread]\nmodel='future-model'\n"
+            );
+            fs::write(paths.config(), &active).unwrap();
+            let before = config::parse(&active).unwrap();
+            let preview =
+                switcher::switch(&paths, "work", AuthMode::Auto, true, quiet_scan()).unwrap();
+            assert_eq!(
+                preview.changed_keys,
+                ["model_provider", "model_providers.<selected>"]
+            );
+            assert_eq!(fs::read_to_string(paths.config()).unwrap(), active);
+            switcher::switch(&paths, "work", AuthMode::Auto, false, quiet_scan()).unwrap();
+            let mut after = switcher::load_config(&paths).unwrap();
+            for (key, _) in saved_doc.iter() {
+                assert_eq!(
+                    after.get(key).map(ToString::to_string),
+                    before.get(key).map(ToString::to_string),
+                    "switch changed {key} (legacy={legacy})"
+                );
+            }
+            assert_eq!(after["models"].to_string(), before["models"].to_string());
+            assert_eq!(
+                after["model_providers"]["other"].to_string(),
+                before["model_providers"]["other"].to_string()
+            );
+            assert_eq!(after["model_provider"].as_str(), Some("proxy"));
+            assert_eq!(
+                after["model_providers"]["proxy"]["experimental_bearer_token"].as_str(),
+                Some("dummy-saved")
+            );
+            after["model"] = toml_edit::value("user-selected-model");
+            fs::write(paths.config(), after.to_string()).unwrap();
+            let current = switcher::current(&paths).unwrap();
+            assert_eq!(current["name"], "work");
+            assert_eq!(current["model"], "user-selected-model");
+            let reimport = switcher::import(
+                &paths,
+                ImportOptions {
+                    name: Some("work".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(reimport.unchanged, ["work"]);
+            assert_eq!(fs::read(paths.preset("work")).unwrap(), saved_bytes);
+        }
+    }
+}
+
+#[test]
+fn add_only_saves_provider_settings_and_switches_its_route() {
+    let source = format!(
+        "openai_base_url='https://saved.example/v1'\n{}",
+        inline_config("dummy-saved")
+    );
+    let active = source
+        .replace("saved.example", "current.example")
+        .replace("model-a", "current-model")
+        .replace("dummy-saved", "dummy-current");
+    let (_temp, paths) = setup(&active);
+    switcher::add(
+        &paths,
+        config::Preset {
+            format_version: 1,
+            name: "work".into(),
+            provider: "proxy".into(),
+            config: source,
+            credential: config::Credential::Provider,
+            source: "test".into(),
+        },
+        None,
+    )
+    .unwrap();
+    let preset = switcher::load_preset(&paths, "work").unwrap();
+    let saved = config::parse(&preset.config).unwrap();
+    assert!(saved.get("model").is_none());
+    assert!(saved.get("features").is_none());
+    assert!(saved.get("mcp_servers").is_none());
+    assert_eq!(fs::read_to_string(paths.config()).unwrap(), active);
+    let result = switcher::switch(&paths, "work", AuthMode::Auto, false, quiet_scan()).unwrap();
+    assert_eq!(
+        result.changed_keys,
+        ["openai_base_url", "model_providers.<selected>"]
+    );
+    let after = switcher::load_config(&paths).unwrap();
+    assert_eq!(after["model"].as_str(), Some("current-model"));
+    assert_eq!(
+        after["openai_base_url"].as_str(),
+        Some("https://saved.example/v1")
+    );
+    assert_eq!(after["features"]["shell_snapshot"].as_bool(), Some(false));
 }
 
 #[test]
@@ -253,7 +389,7 @@ fn profiles_merge_provider_overrides_and_keep_source_untouched() {
     .unwrap();
     let preset = switcher::load_preset(&paths, "saved").unwrap();
     let doc = config::parse(&preset.config).unwrap();
-    assert_eq!(doc["model"].as_str(), Some("profile-model"));
+    assert!(doc.get("model").is_none());
     assert_eq!(
         doc["model_providers"]["proxy"]["base_url"].as_str(),
         Some("https://example.invalid/v1")
@@ -273,19 +409,9 @@ fn legacy_profile_import_does_not_copy_legacy_selector_to_preset() {
     import(&paths, "saved");
     let preset = switcher::load_preset(&paths, "saved").unwrap();
     let doc = config::parse(&preset.config).unwrap();
-    assert_eq!(doc["model"].as_str(), Some("old-model"));
+    assert!(doc.get("model").is_none());
     assert!(doc.get("profile").is_none());
     assert!(doc.get("profiles").is_none());
-}
-
-#[test]
-fn auth_command_is_not_executed_during_import_or_doctor() {
-    let (_temp, paths) = setup(
-        "model_provider='proxy'\n[model_providers.proxy]\nname='Proxy'\n[model_providers.proxy.auth]\ncommand='codex-sw-this-command-must-not-run'\n",
-    );
-    import(&paths, "saved");
-    let result = switcher::doctor(&paths, quiet_scan()).unwrap();
-    assert_eq!(result["ok"], true);
 }
 
 #[test]
@@ -554,63 +680,4 @@ fn config_symlink_is_preserved_and_external_target_is_edited() {
     switcher::switch(&paths, "a", AuthMode::Auto, false, quiet_scan()).unwrap();
     assert!(paths.config().is_symlink());
     assert!(fs::read_to_string(target).unwrap().contains("dummy-a"));
-}
-
-struct Running(Child);
-impl Drop for Running {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-#[test]
-fn cli_warns_for_real_live_process_and_still_switches_credentials() {
-    let (temp, paths) = setup(native_config());
-    fs::write(paths.auth(), native_auth("dummy-a")).unwrap();
-    import(&paths, "a");
-    fs::write(paths.auth(), native_auth("dummy-b")).unwrap();
-    let fake = temp
-        .path()
-        .join(if cfg!(windows) { "codex.exe" } else { "codex" });
-    fs::copy(env!("CARGO_BIN_EXE_codex-sw"), &fake).unwrap();
-    // Our own copied binary waits on stdin; no actual Codex session is started.
-    let _running = Running(
-        Command::new(&fake)
-            .env("CODEX_HOME", &paths.home)
-            .args([
-                "add",
-                "waiting",
-                "--base-url",
-                "https://example.invalid",
-                "--bearer-token-stdin",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-sw"))
-        .arg("--codex-home")
-        .arg(&paths.home)
-        .args(["--json", "use", "a", "--auth-mode", "copy"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = String::from_utf8_lossy(&output.stderr);
-    assert!(text.contains("活跃 Codex 实例"), "{text}");
-    assert!(text.contains("重启"));
-    assert_eq!(fs::read(paths.auth()).unwrap(), native_auth("dummy-a"));
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(
-        !json["active_instances"]["instances"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
 }

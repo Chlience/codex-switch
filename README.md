@@ -1,6 +1,6 @@
 # codex switch
 
-跨平台 Codex provider 切换器，命令行程序名为 `codex-sw`。支持已有配置导入、命名凭据、默认 provider 切换、活跃实例提示、撤销和中断恢复。
+跨平台 Codex provider 切换器，命令行程序名为 `codex-sw`。只切换 provider 及其地址与认证配置，保留当前模型、推理强度和其他运行参数。支持已有配置导入、命名凭据、默认 provider 切换、活跃实例提示、撤销和中断恢复。
 
 发现 Codex 仍在运行时，会显示 PID 并提醒重启，切换照常执行。工具不会结束进程、等待退出或要求额外的强制参数。既有会话不会因此自动切换 provider。
 
@@ -13,7 +13,7 @@ codex-sw --help
 
 用户运行已编译的二进制时不需要 Rust、Node.js 或 Python。GitHub Actions 工作流会在 Linux、macOS、Windows 上测试并生成对应二进制构建产物；仓库本身不自动发布或推送。
 
-最常见的用法是先保存当前配置，再添加或导入其他配置：
+最常见的用法是先保存当前 provider 和认证配置，再添加或导入其他 provider：
 
 ```text
 codex-sw import original
@@ -30,14 +30,15 @@ codex-sw undo
 
 | 命令 | 行为 |
 |---|---|
-| `import <name>` | 导入当前用户默认配置，保留认证方式；不激活 |
+| `import <name>` | 导入当前默认 provider 及认证配置；不激活 |
 | `import <name> --from <file>` | 从指定 config.toml 导入 |
-| `import <name> --profile <name>` | 导入独立 profile，兼容读取旧 `[profiles.*]` |
+| `import <name> --profile <name>` | 提取独立 profile 的 provider 配置，兼容读取旧 `[profiles.*]` |
 | `import <name> --provider <id>` | 从配置中选择某个 provider |
 | `import --all` | 导入所有 provider；仅当前 provider 自动关联原生认证文件 |
 | `import <name> --auth-file <file>` | 显式关联原生认证文件 |
 | `add <name> ...` | 添加新的预设，不激活 |
-| `list` / `current` | 查看预设和实际用户默认配置，不显示密钥 |
+| `list` | 显示带表头的预设名称和 provider 两列表格，不显示模型或密钥 |
+| `current` | 查看实际用户默认 provider 和模型，不显示密钥 |
 | `use <name>` | 修改默认 provider，提示活跃实例重启 |
 | `use <name> --auth-mode auto\|symlink\|copy` | 选择原生认证文件激活方式 |
 | `doctor` | 离线检查配置和凭据依赖，显示活跃实例 |
@@ -45,16 +46,27 @@ codex-sw undo
 | `recover` | 恢复中断事务；保留已被外部修改的文件 |
 | `remove <name>` | 删除未使用的预设登记；凭据与历史备份保留 |
 
-`import` 和 `use` 支持 `--dry-run`。同名相同内容的导入会跳过；不同内容必须使用新名称。预设名称允许 ASCII 字母、数字、横线及下划线，避开 Windows 保留名称和大小写冲突。
+`import` 和 `use` 支持 `--dry-run`。同名且 provider 与认证配置相同的导入会跳过；仅模型参数变化时也视为相同。provider 或认证配置不同则必须使用新名称。预设名称允许 ASCII 字母、数字、横线及下划线，避开 Windows 保留名称和大小写冲突。
+
+`list` 自动按预设名称长度对齐两列，例如：
+
+```text
+预设名称  Provider
+────────  ────────
+original  proxy
+work      company
+```
 
 新增一个通过环境变量认证的 provider：
 
 ```text
-codex-sw add work --base-url https://provider.example/v1 --model your-model --env-key WORK_API_KEY
+codex-sw add work --base-url https://provider.example/v1 --env-key WORK_API_KEY
 codex-sw use work
 ```
 
 请在将要运行 Codex 的环境中设置 `WORK_API_KEY`。工具只保存变量名称，不复制当前环境中的密钥，也不能修改调用它的父 shell 环境。
+
+模型由当前 Codex 配置决定，`add` 不接受 `--model` 参数。
 
 已有直接 token 可以通过 `import` 保留 `experimental_bearer_token`。新增直接 token 时使用 `add ... --bearer-token-stdin`，从标准输入传入；该选项与 `--env-key`、`--auth-file` 互斥。需要原生认证时使用 `add ... --auth-file <file>`。使用现有官方文件登录可添加 `add official --provider openai`；工具不会为该预设导出系统凭据库。
 
@@ -82,7 +94,9 @@ CODEX_HOME/
     └── history/<transaction>.json
 ```
 
-导入只提取 provider 和相关模型设置。切换保留 MCP、沙盒、项目授权及其他无关配置，使用 TOML 语法树编辑以保留无关注释；所选 provider 的定义作为整体恢复。配置中未保存的相关模型字段在切换时清除，避免上一个预设的参数残留。已有 config.toml 软链会保留，并编辑其实际目标。
+导入只提取 `model_provider`、`openai_base_url`、所选 `model_providers.<id>` 定义及相关认证方式。切换只更新这些 provider 设置和必要的认证存储配置。所选 provider 的定义作为整体恢复；`openai_base_url` 以预设为准，预设未设置时清除。模型、推理强度、上下文窗口、模型目录、`service_tier`、MCP、沙盒、项目授权和其他设置保持当前值，包括未设置状态。工具使用 TOML 语法树编辑以保留无关注释。已有 config.toml 软链会保留，并编辑其实际目标。
+
+已有预设保持可读取，其中旧版本保存的模型参数会被忽略，不再参与切换、预设匹配或重复导入判断。工具不会自动重写这些预设文件。`list` 的文本和 JSON 输出均不包含预设模型；`current` 仍显示配置中的实际默认模型。
 
 导入旧 profile 不会改写源文件。若正在使用的 config.toml 仍有旧顶层 `profile` 选择器，需先按 Codex 官方指引迁移；工具不会静默删除旧 profile 配置。CLI 参数、独立 profile、项目和管理配置仍可能覆盖用户默认值，`current` 不表示运行中会话的完整配置。
 
@@ -106,4 +120,4 @@ cargo check --locked --all-targets --target x86_64-pc-windows-msvc
 cargo build --locked --release
 ```
 
-测试全部使用临时目录和虚构凭据；活跃进程测试只创建、结束测试自身的子进程。Windows/macOS 的运行时验证由对应平台 CI 执行，本机交叉编译检查不能替代它。
+测试全部使用临时目录和虚构凭据，覆盖新旧预设切换时保留模型参数、参数未设置状态、预设匹配、重复导入及 CLI 输出；活跃进程测试只创建、结束测试自身的子进程。Windows/macOS 的运行时验证由对应平台 CI 执行，本机交叉编译检查不能替代它。
