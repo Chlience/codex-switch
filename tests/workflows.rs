@@ -1,6 +1,5 @@
 use codex_sw::{
     config,
-    process::{Instance, Scan},
     storage::{self, Change, Journal, Paths, Snapshot},
     switcher::{self, AuthMode, ImportOptions},
 };
@@ -39,13 +38,6 @@ fn import(paths: &Paths, name: &str) {
     .unwrap();
 }
 
-fn quiet_scan() -> Scan {
-    Scan {
-        available: true,
-        instances: vec![],
-    }
-}
-
 fn native_auth(key: &str) -> Vec<u8> {
     serde_json::to_vec(
         &json!({"auth_mode":"apikey", "OPENAI_API_KEY":key, "unknown_field":{"retained":true}}),
@@ -66,7 +58,7 @@ fn import_preserves_source_and_switch_preserves_unrelated_settings() {
             .replace("dummy-a", "other-key"),
     )
     .unwrap();
-    switcher::switch(&paths, "work", AuthMode::Auto, false, quiet_scan()).unwrap();
+    switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
     let switched = fs::read_to_string(paths.config()).unwrap();
     assert!(switched.contains("model = \"other-model\""));
     assert!(switched.contains("experimental_bearer_token = \"dummy-a\""));
@@ -126,14 +118,13 @@ service_tier = "flex"
             );
             fs::write(paths.config(), &active).unwrap();
             let before = config::parse(&active).unwrap();
-            let preview =
-                switcher::switch(&paths, "work", AuthMode::Auto, true, quiet_scan()).unwrap();
+            let preview = switcher::switch(&paths, "work", AuthMode::Auto, true).unwrap();
             assert_eq!(
                 preview.changed_keys,
                 ["model_provider", "model_providers.<selected>"]
             );
             assert_eq!(fs::read_to_string(paths.config()).unwrap(), active);
-            switcher::switch(&paths, "work", AuthMode::Auto, false, quiet_scan()).unwrap();
+            switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
             let mut after = switcher::load_config(&paths).unwrap();
             for (key, _) in saved_doc.iter() {
                 assert_eq!(
@@ -201,7 +192,7 @@ fn add_only_saves_provider_settings_and_switches_its_route() {
     assert!(saved.get("features").is_none());
     assert!(saved.get("mcp_servers").is_none());
     assert_eq!(fs::read_to_string(paths.config()).unwrap(), active);
-    let result = switcher::switch(&paths, "work", AuthMode::Auto, false, quiet_scan()).unwrap();
+    let result = switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
     assert_eq!(
         result.changed_keys,
         ["openai_base_url", "model_providers.<selected>"]
@@ -232,7 +223,7 @@ fn dry_run_does_not_create_store_or_modify_files() {
     assert!(!paths.store.exists());
     import(&paths, "work");
     let state_before = Snapshot::read(&paths.state()).unwrap();
-    let result = switcher::switch(&paths, "work", AuthMode::Auto, true, quiet_scan()).unwrap();
+    let result = switcher::switch(&paths, "work", AuthMode::Auto, true).unwrap();
     assert!(result.dry_run);
     assert_eq!(Snapshot::read(&paths.state()).unwrap(), state_before);
     assert_eq!(fs::read_to_string(paths.config()).unwrap(), original);
@@ -265,26 +256,6 @@ fn duplicate_import_is_idempotent_and_different_content_is_preserved() {
         .is_err()
     );
     assert_eq!(fs::read(paths.preset("work")).unwrap(), saved);
-}
-
-#[test]
-fn process_warning_does_not_block_native_switch() {
-    let (_temp, paths) = setup(native_config());
-    let bytes = native_auth("dummy-a");
-    fs::write(paths.auth(), &bytes).unwrap();
-    import(&paths, "work");
-    fs::write(paths.auth(), native_auth("dummy-b")).unwrap();
-    let scan = Scan {
-        available: true,
-        instances: vec![Instance {
-            pid: 12345,
-            scope: "相同 Codex 目录".into(),
-        }],
-    };
-    let result = switcher::switch(&paths, "work", AuthMode::Copy, false, scan).unwrap();
-    assert!(result.auth_changed);
-    assert_eq!(result.active_instances.instances[0].pid, 12345);
-    assert_eq!(fs::read(paths.auth()).unwrap(), bytes);
 }
 
 #[test]
@@ -333,7 +304,7 @@ fn import_retains_environment_reference_without_capturing_value() {
     let preset = switcher::load_preset(&paths, "work").unwrap();
     assert!(preset.config.contains("CODEX_SW_TEST_MISSING_KEY_79337"));
     let before = fs::read(paths.config()).unwrap();
-    let error = switcher::switch(&paths, "work", AuthMode::Auto, false, quiet_scan())
+    let error = switcher::switch(&paths, "work", AuthMode::Auto, false)
         .err()
         .unwrap()
         .to_string();
@@ -359,7 +330,7 @@ fn empty_token_import_can_be_reviewed_but_cannot_be_activated() {
             .config
             .contains("experimental_bearer_token = \"\"")
     );
-    assert!(switcher::switch(&paths, "empty", AuthMode::Auto, false, quiet_scan()).is_err());
+    assert!(switcher::switch(&paths, "empty", AuthMode::Auto, false).is_err());
 }
 
 #[test]
@@ -369,7 +340,7 @@ fn bearer_with_native_flag_and_no_auth_file_remains_usable() {
         native_config()
     ));
     import(&paths, "work");
-    switcher::switch(&paths, "work", AuthMode::Auto, false, quiet_scan()).unwrap();
+    switcher::switch(&paths, "work", AuthMode::Auto, false).unwrap();
     assert!(!paths.auth().exists());
 }
 
@@ -420,10 +391,10 @@ fn undo_restores_config_and_rejects_external_edits() {
     import(&paths, "work");
     let original = inline_config("dummy-b");
     fs::write(paths.config(), &original).unwrap();
-    switcher::switch(&paths, "work", AuthMode::Copy, false, quiet_scan()).unwrap();
+    switcher::switch(&paths, "work", AuthMode::Copy, false).unwrap();
     switcher::undo(&paths).unwrap();
     assert_eq!(fs::read_to_string(paths.config()).unwrap(), original);
-    switcher::switch(&paths, "work", AuthMode::Copy, false, quiet_scan()).unwrap();
+    switcher::switch(&paths, "work", AuthMode::Copy, false).unwrap();
     fs::write(paths.config(), "# changed externally\n").unwrap();
     assert!(switcher::undo(&paths).is_err());
     assert_eq!(
@@ -518,7 +489,7 @@ fn current_detects_a_changed_native_login() {
     let (_temp, paths) = setup(native_config());
     fs::write(paths.auth(), native_auth("dummy-a")).unwrap();
     import(&paths, "a");
-    switcher::switch(&paths, "a", AuthMode::Copy, false, quiet_scan()).unwrap();
+    switcher::switch(&paths, "a", AuthMode::Copy, false).unwrap();
     assert_eq!(switcher::current(&paths).unwrap()["name"], "a");
     fs::write(paths.auth(), native_auth("dummy-changed")).unwrap();
     assert_eq!(
@@ -549,17 +520,17 @@ fn copy_mode_saves_refreshed_credentials_before_switching() {
     import(&paths, "a");
     fs::write(paths.auth(), native_auth("dummy-b")).unwrap();
     import(&paths, "b");
-    switcher::switch(&paths, "a", AuthMode::Copy, false, quiet_scan()).unwrap();
+    switcher::switch(&paths, "a", AuthMode::Copy, false).unwrap();
     fs::write(paths.auth(), oauth("new-refresh")).unwrap();
-    switcher::switch(&paths, "b", AuthMode::Copy, false, quiet_scan()).unwrap();
+    switcher::switch(&paths, "b", AuthMode::Copy, false).unwrap();
     assert_eq!(
         fs::read(paths.credential("a")).unwrap(),
         oauth("new-refresh")
     );
-    switcher::switch(&paths, "a", AuthMode::Copy, false, quiet_scan()).unwrap();
+    switcher::switch(&paths, "a", AuthMode::Copy, false).unwrap();
     assert_eq!(fs::read(paths.auth()).unwrap(), oauth("new-refresh"));
     fs::write(paths.auth(), oauth("newest-refresh")).unwrap();
-    switcher::switch(&paths, "a", AuthMode::Copy, false, quiet_scan()).unwrap();
+    switcher::switch(&paths, "a", AuthMode::Copy, false).unwrap();
     assert_eq!(fs::read(paths.auth()).unwrap(), oauth("newest-refresh"));
     assert_eq!(
         fs::read(paths.credential("a")).unwrap(),
@@ -608,34 +579,6 @@ fn rejects_traversal_and_portability_conflicts() {
     );
 }
 
-#[test]
-fn process_classifier_ignores_prompts_and_recognizes_node_wrapper() {
-    use std::ffi::OsStr;
-    assert!(codex_sw::process::is_codex(
-        OsStr::new("codex.exe"),
-        None,
-        &[]
-    ));
-    assert!(codex_sw::process::is_codex(
-        OsStr::new("node"),
-        None,
-        &[
-            "node".into(),
-            "/opt/node_modules/@openai/codex/bin/codex.js".into()
-        ]
-    ));
-    assert!(!codex_sw::process::is_codex(
-        OsStr::new("bash"),
-        None,
-        &["bash".into(), "-c".into(), "echo codex".into()]
-    ));
-    assert!(!codex_sw::process::is_codex(
-        OsStr::new("codex-sw"),
-        None,
-        &[]
-    ));
-}
-
 #[cfg(unix)]
 #[test]
 fn unix_links_and_private_file_modes() {
@@ -643,7 +586,7 @@ fn unix_links_and_private_file_modes() {
     let (_temp, paths) = setup(native_config());
     fs::write(paths.auth(), native_auth("dummy-key")).unwrap();
     import(&paths, "a");
-    switcher::switch(&paths, "a", AuthMode::Symlink, false, quiet_scan()).unwrap();
+    switcher::switch(&paths, "a", AuthMode::Symlink, false).unwrap();
     assert!(paths.auth().is_symlink());
     assert_eq!(
         fs::read_link(paths.auth()).unwrap(),
@@ -677,7 +620,7 @@ fn config_symlink_is_preserved_and_external_target_is_edited() {
     fs::rename(paths.config(), &target).unwrap();
     std::os::unix::fs::symlink(&target, paths.config()).unwrap();
     fs::write(&target, inline_config("dummy-b")).unwrap();
-    switcher::switch(&paths, "a", AuthMode::Auto, false, quiet_scan()).unwrap();
+    switcher::switch(&paths, "a", AuthMode::Auto, false).unwrap();
     assert!(paths.config().is_symlink());
     assert!(fs::read_to_string(target).unwrap().contains("dummy-a"));
 }

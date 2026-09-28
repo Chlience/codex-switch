@@ -2,7 +2,6 @@ use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use codex_sw::{
     config::{self, Credential, Preset},
-    process,
     storage::Paths,
     switcher::{self, AuthMode, ImportOptions},
 };
@@ -11,12 +10,14 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 mod interactive;
 
+const RESTART_NOTICE: &str = "提示：已有 Codex 实例需要重启后使用新配置。";
+
 #[derive(Parser)]
 #[command(
     name = "codex-sw",
     version,
     about = "跨平台 Codex provider 切换器",
-    after_help = "凭据保存在本机受保护的文件中。切换时如发现活跃实例会提示重启，仍正常执行切换。"
+    after_help = "凭据保存在本机受保护的文件中。切换后，已有 Codex 实例需要重启后使用新配置。"
 )]
 struct Cli {
     /// Codex 配置目录；默认读取 CODEX_HOME 或 ~/.codex
@@ -66,7 +67,7 @@ enum Commands {
     },
     /// 显示预设名称和 provider 表格，不显示凭据
     List,
-    /// 切换默认 provider；存在活跃实例时提醒重启并继续执行
+    /// 切换默认 provider，并提醒已有实例重启
     Use {
         name: String,
         #[arg(long, value_enum, default_value = "auto")]
@@ -76,7 +77,7 @@ enum Commands {
     },
     /// 显示用户配置中的默认 provider
     Current,
-    /// 检查配置、凭据引用及活跃实例，不发起模型请求
+    /// 检查配置和凭据引用，不发起模型请求
     Doctor,
     /// 撤销最近一次切换；外部修改或刷新后拒绝覆盖
     Undo,
@@ -254,11 +255,12 @@ fn run(cli: Cli) -> Result<()> {
             auth_mode,
             dry_run,
         } => {
-            let scan = process::detect(&paths.home);
-            process::warn(&scan);
-            let result = switcher::switch(&paths, &name, auth_mode, dry_run, scan)?;
+            let result = switcher::switch(&paths, &name, auth_mode, dry_run)?;
             for warning in &result.warnings {
                 eprintln!("警告：{warning}");
+            }
+            if !dry_run {
+                eprintln!("{RESTART_NOTICE}");
             }
             let text = if dry_run {
                 format!(
@@ -267,7 +269,7 @@ fn run(cli: Cli) -> Result<()> {
                     result.auth_changed
                 )
             } else {
-                format!("已切换到 {name}。请重启已有 Codex 实例以使用新配置。")
+                format!("已切换到 {name}。")
             };
             output(cli.json, serde_json::to_value(result)?, text)
         }
@@ -284,9 +286,7 @@ fn run(cli: Cli) -> Result<()> {
             output(cli.json, data, text)
         }
         Commands::Doctor => {
-            let scan = process::detect(&paths.home);
-            process::warn(&scan);
-            let data = switcher::doctor(&paths, scan)?;
+            let data = switcher::doctor(&paths)?;
             let text = serde_json::to_string_pretty(&data)?;
             let ok = data["ok"].as_bool() == Some(true);
             output(cli.json, data, text)?;
@@ -294,17 +294,19 @@ fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Undo => {
-            process::warn(&process::detect(&paths.home));
             switcher::undo(&paths)?;
+            eprintln!("{RESTART_NOTICE}");
             output(
                 cli.json,
                 serde_json::json!({"undone":true}),
-                "已撤销最近一次切换；请重启已有 Codex 实例。",
+                "已撤销最近一次切换。",
             )
         }
         Commands::Recover => {
-            process::warn(&process::detect(&paths.home));
             let recovered = switcher::recover(&paths)?;
+            if recovered {
+                eprintln!("{RESTART_NOTICE}");
+            }
             output(
                 cli.json,
                 serde_json::json!({"recovered":recovered}),

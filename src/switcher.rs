@@ -1,6 +1,5 @@
 use crate::{
     config::{self, Credential, Preset},
-    process::Scan,
     storage::{self, Change, Journal, Paths, Snapshot},
 };
 use anyhow::{Context, Result, ensure};
@@ -329,16 +328,9 @@ pub struct SwitchResult {
     pub auth_changed: bool,
     pub dry_run: bool,
     pub warnings: Vec<String>,
-    pub active_instances: Scan,
 }
 
-pub fn switch(
-    paths: &Paths,
-    name: &str,
-    mode: AuthMode,
-    dry_run: bool,
-    scan: Scan,
-) -> Result<SwitchResult> {
+pub fn switch(paths: &Paths, name: &str, mode: AuthMode, dry_run: bool) -> Result<SwitchResult> {
     let _lock = if dry_run { None } else { Some(paths.lock()?) };
     paths.require_clean()?;
     let preset = load_preset(paths, name)?;
@@ -451,7 +443,6 @@ pub fn switch(
         auth_changed,
         dry_run,
         warnings,
-        active_instances: scan,
     };
     if !dry_run {
         storage::execute(paths, Journal::new(changes, true))?;
@@ -542,7 +533,7 @@ pub fn current(paths: &Paths) -> Result<serde_json::Value> {
     )
 }
 
-pub fn doctor(paths: &Paths, scan: Scan) -> Result<serde_json::Value> {
+pub fn doctor(paths: &Paths) -> Result<serde_json::Value> {
     let doc = load_config(paths)?;
     let id = config::provider_id(&doc)?;
     let mut issues = Vec::new();
@@ -597,9 +588,6 @@ pub fn doctor(paths: &Paths, scan: Scan) -> Result<serde_json::Value> {
             warnings.push(format!("检测到 {key}，可能影响原生认证选择（不显示值）"));
         }
     }
-    if !scan.available {
-        warnings.push("进程检测不可用".into());
-    }
     let version = std::process::Command::new("codex")
         .arg("--version")
         .output()
@@ -610,7 +598,7 @@ pub fn doctor(paths: &Paths, scan: Scan) -> Result<serde_json::Value> {
         warnings.push("PATH 中未找到可运行的 Codex".into());
     }
     Ok(
-        serde_json::json!({"ok":issues.is_empty(), "config_path":paths.config(), "codex_version":version, "issues":issues, "warnings":warnings, "active_instances":scan, "validation":"本地检查；未执行认证命令或发送模型请求"}),
+        serde_json::json!({"ok":issues.is_empty(), "config_path":paths.config(), "codex_version":version, "issues":issues, "warnings":warnings, "validation":"本地检查；未执行认证命令或发送模型请求"}),
     )
 }
 

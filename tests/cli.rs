@@ -5,7 +5,7 @@ use serde_json::json;
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
-    process::{Child, Command, Output, Stdio},
+    process::{Command, Output, Stdio},
 };
 use tempfile::TempDir;
 
@@ -290,61 +290,47 @@ fn auth_command_is_not_executed_during_import_or_doctor() {
     assert_eq!(result["ok"], true);
 }
 
-struct Running(Child);
-impl Drop for Running {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
 #[test]
-fn cli_warns_for_real_live_process_and_still_switches_credentials() {
-    let (temp, paths) = setup(native_config());
+fn cli_switch_always_reminds_to_restart_without_process_details() {
+    let (_temp, paths) = setup(native_config());
     fs::write(paths.auth(), native_auth("dummy-a")).unwrap();
     assert!(cli(&paths, &["import", "a"]).status.success());
     fs::write(paths.auth(), native_auth("dummy-b")).unwrap();
-    let fake = temp
-        .path()
-        .join(if cfg!(windows) { "codex.exe" } else { "codex" });
-    fs::copy(env!("CARGO_BIN_EXE_codex-sw"), &fake).unwrap();
-    // Our own copied binary waits on stdin; no actual Codex session is started.
-    let _running = Running(
-        Command::new(&fake)
-            .env("CODEX_HOME", &paths.home)
-            .args([
-                "add",
-                "waiting",
-                "--base-url",
-                "https://example.invalid",
-                "--bearer-token-stdin",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
+    let output = cli(&paths, &["--json", "use", "a", "--auth-mode", "copy"]);
+    assert!(output.status.success(), "{:?}", output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "提示：已有 Codex 实例需要重启后使用新配置。\n"
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-sw"))
-        .arg("--codex-home")
-        .arg(&paths.home)
-        .args(["--json", "use", "a", "--auth-mode", "copy"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = String::from_utf8_lossy(&output.stderr);
-    assert!(text.contains("活跃 Codex 实例"), "{text}");
-    assert!(text.contains("重启"));
     assert_eq!(fs::read(paths.auth()).unwrap(), native_auth("dummy-a"));
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(
-        !json["active_instances"]["instances"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(json["auth_changed"], true);
+    assert!(json.get("active_instances").is_none());
+    let undo = cli(&paths, &["undo"]);
+    assert!(undo.status.success(), "{:?}", undo);
+    assert_eq!(undo.stderr, output.stderr);
+    assert_eq!(fs::read(paths.auth()).unwrap(), native_auth("dummy-b"));
+}
+
+#[test]
+fn cli_read_only_and_failed_commands_do_not_request_a_restart() {
+    let (_temp, paths) = setup(native_config());
+    fs::write(paths.auth(), native_auth("dummy-a")).unwrap();
+    assert!(cli(&paths, &["import", "a"]).status.success());
+    for args in [
+        vec!["use", "a", "--dry-run"],
+        vec!["doctor", "--json"],
+        vec!["recover"],
+    ] {
+        let output = cli(&paths, &args);
+        assert!(output.status.success(), "{:?}", output);
+        assert!(output.stderr.is_empty(), "{:?}", output);
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(!text.contains("active_instances"));
+        assert!(!text.contains("PID"));
+        assert!(!text.contains("重启"));
+    }
+    let output = cli(&paths, &["use", "missing"]);
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("重启"));
 }
